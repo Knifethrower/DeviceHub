@@ -1219,7 +1219,7 @@ const TYPES = {
   "TrimUI Brick": ["Allwinner A133P", "PowerVR GE8300", 1024, "1024x768"],
   "Retroid Pocket 5": ["Qualcomm Snapdragon 865", "Adreno 650", 8192, "1920x1080"],
 };
-const CFWS = ["Knulli", "ROCKNIX", "muOS", "dArkOS", "ArkOS", "AmberELEC", "JELOS", "Batocera", "PortMaster mode", "Other"];
+const CFWS = ["Knulli", "ROCKNIX", "muOS", "dArkOS", "ArkOS", "AmberELEC", "JELOS", "Batocera", "Other"];
 // fields that belong to an SD-card profile (the rest belong to the device)
 const CARD_KEYS = ["cfw", "port", "user", "auth", "identity", "smb", "ports_dir", "pm_dir", "fe_proc", "fe_start", "fe_stop", "fe_reload", "fe_alt"];
 let edCards = [], edIdx = 0, edDev = null;
@@ -1328,7 +1328,7 @@ function field(f, v, d) {
   if (f.type === "hidden") return `<input type="hidden" id="${id}" value="${esc(v[f.k] || "")}"><div class="f wide" id="rcnote">${rcNote(v.rc_slug)}</div>`;
   if (f.type === "checkbox") return `<label class="${cls}" data-show="${f.k}"><input id="${id}" type="checkbox" ${v[f.k] ? "checked" : ""}><span>${(CARD_KEYS.includes(f.k) || f.k === "_pw") && edCards.length > 1 ? "▣ " : ""}${f.label}</span></label>`;
   let input;
-  if (f.select) input = `<select id="${id}">${f.select.map(([val, lab]) => `<option value="${esc(val)}" ${String(v[f.k]) === val ? "selected" : ""}>${esc(lab)}</option>`).join("")}</select>`;
+  if (f.select) input = `<select id="${id}">${(v[f.k] && !f.select.some(([val]) => val === String(v[f.k])) ? [[String(v[f.k]), String(v[f.k])]] : []).concat(f.select).map(([val, lab]) => `<option value="${esc(val)}" ${String(v[f.k]) === val ? "selected" : ""}>${esc(lab)}</option>`).join("")}</select>`;
   else if (f.type === "textarea") input = `<textarea id="${id}" rows="2" placeholder="${esc(f.ph || "")}">${esc(v[f.k] || "")}</textarea>`;
   else input = `<input id="${id}" ${f.type === "number" ? 'type="number" min="0"' : 'type="text"'} ${f.list ? `list="${f.list}"` : ""} value="${esc(v[f.k] ?? "")}"
       placeholder="${esc(f.ph || "")}" ${f.createOnly && d ? "disabled" : ""} ${f.mono ? 'class="mono"' : ""} spellcheck="false">`;

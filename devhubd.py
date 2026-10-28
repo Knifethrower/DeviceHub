@@ -91,12 +91,6 @@ CFW_PRESETS = {
               "fe_proc": "emulationstation", "fe_start": "sudo systemctl start emulationstation",
               "fe_stop": "sudo systemctl stop emulationstation"},
     "muOS": {"user": "root", "auth": "key", "ports_dir": "", "smb_share": "", "fe_proc": "", "fe_start": "", "fe_stop": ""},
-    # a Linux PC with "PortMaster mode" (Samsung Galaxy Book Go, Debian + XFCE): pmmode.service stops LightDM and runs
-    # an SDL/KMSDRM launcher; the normal desktop (LightDM) also counts as the front end being up
-    "PortMaster mode": {"user": "", "auth": "key", "ports_dir": "/roms/ports", "smb_share": "",
-                        "fe_proc": "pmmode-frontend", "fe_alt": "lightdm",
-                        "fe_start": "sudo systemctl start pmmode.service",
-                        "fe_stop": "sudo systemctl stop pmmode.service"},
     "Other": {},
 }
 
@@ -138,10 +132,10 @@ SYSTEM_PROCS = {
     # Windows network discovery (Knulli runs wsdd under python3), Bluetooth, mDNS
     "fluidsynth", "mount.exfat", "mount.exfat-fuse", "exfat-fuse", "mount.ntfs-3g", "ntfs-3g", "wsdd", "wsdd2",
     "wsdd.py", "bluetoothd", "avahi-daemon", "filebrowser",
-    # a Linux desktop (Galaxy Book Go in desktop mode): X, the display manager and XFCE, not a port left running
+    # a Linux desktop (laptop/PC test devices): X, the display manager and XFCE, not a port left running
     "Xorg", "X", "lightdm", "xfwm4", "xfce4-panel", "xfdesktop", "xfce4-session", "xfsettingsd", "xfconfd",
     "xfce4-power-manager", "xfce4-notifyd", "Thunar", "thunar", "panel-1-whiskermenu", "nm-applet", "polkitd",
-    "upowerd", "colord", "ModemManager", "packagekitd", "gvfsd", "tumblerd", "light-locker", "pmmode-frontend",
+    "upowerd", "colord", "ModemManager", "packagekitd", "gvfsd", "tumblerd", "light-locker",
 }
 WRAPPERS = {"box64", "box86", "python", "python3", "love", "mono", "sh", "bash", "java", "wine", "wine64",
             "gmloader", "gmloadernext.aarch64", "westonwrap.sh", "taskset"}
@@ -2687,8 +2681,6 @@ for t in $(pidof tee 2>/dev/null); do
 done
 for f in /userdata/system/logs/es_launch_stdout.log /userdata/system/logs/es_launch_stderr.log; do src "front end launch log" "$f"; done
 [ -n "$PM" ] && src "PortMaster log" "$PM/log.txt"
-# PortMaster mode on a Linux PC (Galaxy Book Go): the launcher keeps a full log per port launch
-ls -t "$HOME"/.local/state/pmmode/logs/*.log 2>/dev/null | head -6 | while IFS= read -r f; do src "PortMaster mode launch log" "$f"; done
 find /tmp -maxdepth 2 \( -name '*.log' -o -name 'log.txt' \) -mmin -180 2>/dev/null | head -12 | while IFS= read -r f; do src "recent /tmp log" "$f"; done
 true
 """

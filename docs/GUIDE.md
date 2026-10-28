@@ -95,8 +95,7 @@ agents see [AGENTS.md](AGENTS.md).
 ## Laptops and Linux PCs
 
 *Also counts as the front end running* (`fe_alt`, e.g. `lightdm`) makes a normal desktop count as a clean, running
-front end (the card says "desktop"); desktop programs never count as an app left running. The *PortMaster mode*
-CFW preset is an example for a laptop that boots into a PortMaster session through a `pmmode.service`.
+front end (the card says "desktop"); desktop programs never count as an app left running.
 
 ## Running it
 
