@@ -1,0 +1,16 @@
+[Unit]
+Description=DeviceHub: handheld test devices (locks, shared SSH, web UI on 127.0.0.1:8765)
+After=network.target
+RequiresMountsFor=@DIR@
+ConditionPathExists=@DIR@/devhubd.py
+
+[Service]
+User=@USER@
+ExecStart=@PYTHON@ @DIR@/devhubd.py
+Restart=on-failure
+RestartSec=5
+# only the hub itself stops: the shared SSH connections it opened stay up and are adopted on the next start
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

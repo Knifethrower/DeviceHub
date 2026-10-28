@@ -1,0 +1,1532 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeviceHub</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='7' width='26' height='18' rx='5' fill='%232563eb'/%3E%3Ccircle cx='10' cy='16' r='3' fill='white'/%3E%3Ccircle cx='22' cy='14' r='1.6' fill='white'/%3E%3Ccircle cx='25' cy='18' r='1.6' fill='white'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f4f5f7; --panel: #ffffff; --panel2: #f8f9fb; --text: #1b1f24; --muted: #5d6673; --faint: #8a93a0;
+  --line: #e1e4e8; --accent: #2563eb; --accent-soft: #e6eeff;
+  --ok: #15803d; --ok-soft: #e3f5e8; --warn: #b45309; --warn-soft: #fdf1dc; --bad: #c02626; --bad-soft: #fde6e6;
+  --mute-soft: #eef0f3; --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111418; --panel: #1a1e24; --panel2: #20252c; --text: #e6e9ee; --muted: #a0a8b4; --faint: #77808c;
+    --line: #2c323b; --accent: #6b9bff; --accent-soft: #1e2a44;
+    --ok: #4ade80; --ok-soft: #173023; --warn: #fbbf24; --warn-soft: #3a2c10; --bad: #f87171; --bad-soft: #3d1a1a;
+    --mute-soft: #262b33; --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111418; --panel: #1a1e24; --panel2: #20252c; --text: #e6e9ee; --muted: #a0a8b4; --faint: #77808c;
+  --line: #2c323b; --accent: #6b9bff; --accent-soft: #1e2a44;
+  --ok: #4ade80; --ok-soft: #173023; --warn: #fbbf24; --warn-soft: #3a2c10; --bad: #f87171; --bad-soft: #3d1a1a;
+  --mute-soft: #262b33; --shadow: none;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { border: 1px solid var(--line); background: var(--panel); border-radius: 7px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { color: var(--bad); }
+button.small { padding: 2px 8px; font-size: 12.5px; }
+button:disabled { opacity: .5; cursor: default; }
+header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px; padding: 10px 20px;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
+header .summary { color: var(--muted); font-size: 13px; }
+.spacer { flex: 1; }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--faint); }
+.dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 18px; padding: 18px 20px 40px; align-items: start; }
+@media (max-width: 1150px) { main { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) { main { padding: 12px 16px 30px; } header { padding: 10px 16px; flex-wrap: wrap; } }
+#alerts { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; }
+#alerts:empty { display: none; }
+.alert { display: flex; gap: 10px; align-items: center; padding: 9px 12px; border-radius: 9px; background: var(--warn-soft);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+.alert.ask { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.alert .t { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.alert .txt { flex: 1; min-width: 0; }
+#devices { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+@media (max-width: 600px) { #devices { grid-template-columns: minmax(0, 1fr); } }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; min-width: 0; }
+.card.off { opacity: .65; }
+.card-head { display: flex; gap: 10px; align-items: flex-start; padding: 14px 14px 8px; }
+.card-head h2 { font-size: 16px; margin: 0; }
+.sub { color: var(--muted); font-size: 12.5px; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px; }
+.pill { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--mute-soft); color: var(--muted); white-space: nowrap; }
+.pill.ok { background: var(--ok-soft); color: var(--ok); } .pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); } .pill.acc { background: var(--accent-soft); color: var(--accent); }
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: 10px 14px 4px; }
+.stat { background: var(--panel2); border-radius: 8px; padding: 5px 8px; min-width: 0; }
+.stat .k { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .4px; }
+.stat .v { font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat .s { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+table.ports { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.ports th { text-align: left; font-size: 11.5px; color: var(--muted); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }
+table.ports td { padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+table.ports td .sub { display: block; }
+table.ports td:first-child { min-width: 170px; }
+table.ports td.opt { overflow-wrap: normal; word-break: normal; }
+table.ports td:nth-child(4) { white-space: nowrap; overflow-wrap: normal; }
+table.ports select[data-logsel] { width: 120px; max-width: 120px; }
+@media (max-width: 600px) { table.ports .opt { display: none; } }
+.app { padding: 4px 14px 0; font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg { padding: 4px 14px 0; font-size: 12.5px; color: var(--muted); }
+.msg.bad { color: var(--bad); } .msg.warn { color: var(--warn); }
+.lock { margin: 10px 14px 0; border-radius: 10px; padding: 10px 12px; background: var(--panel2); border: 1px solid var(--line); }
+.lock.held { border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: var(--accent-soft); }
+.lock.check { border-color: color-mix(in srgb, var(--warn) 50%, transparent); background: var(--warn-soft); }
+.lock.stale { border-color: color-mix(in srgb, var(--bad) 50%, transparent); background: var(--bad-soft); }
+.lock-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lock-title { font-weight: 600; }
+.lock .meta { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+.lock .purpose { margin-top: 2px; overflow-wrap: anywhere; }
+.bar { height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--text) 10%, transparent); margin-top: 7px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--accent); }
+.lock.check .bar > i { background: var(--warn); } .lock.stale .bar > i { background: var(--bad); }
+.lock .btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.q { font-size: 12.5px; margin-top: 6px; color: var(--muted); }
+.req { display: flex; gap: 6px; align-items: center; margin-top: 6px; font-size: 13px; flex-wrap: wrap; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 14px 0; }
+details.more { padding: 6px 14px 0; }
+details.more summary { cursor: pointer; color: var(--muted); font-size: 12.5px; list-style: none; }
+details.more summary::-webkit-details-marker { display: none; }
+details.more .actions { padding: 6px 0 0; }
+.notes { margin: 10px 14px 0; font-size: 12.5px; color: var(--muted); white-space: pre-wrap; border-left: 3px solid var(--line); padding-left: 8px; }
+.card-foot { padding: 10px 14px 12px; margin-top: auto; }
+aside { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); min-width: 0; }
+.panel h3 { font-size: 14px; margin: 0; padding: 12px 14px 8px; display: flex; gap: 8px; align-items: center; }
+.panel .body { padding: 0 14px 12px; }
+.sess { display: flex; gap: 8px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.sess:first-child { border-top: 0; }
+.sess .n { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px; cursor: pointer; }
+.sess .n:hover { text-decoration: underline; }
+#events { max-height: 560px; overflow: auto; font-size: 12.5px; }
+.ev { display: grid; grid-template-columns: 44px 70px minmax(0, 1fr); gap: 6px; padding: 4px 0; border-top: 1px solid var(--line); }
+.ev:first-child { border-top: 0; }
+.ev .t { color: var(--faint); font-variant-numeric: tabular-nums; }
+.ev .d { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.ev .m { overflow-wrap: anywhere; }
+.ev .k { display: inline-block; font-size: 11px; color: var(--muted); background: var(--mute-soft); border-radius: 4px; padding: 0 4px; margin-right: 4px; }
+.ev.lock .k, .ev.renew .k, .ev.release .k { background: var(--accent-soft); color: var(--accent); }
+.ev.check .k, .ev.approval .k { background: var(--warn-soft); color: var(--warn); }
+.ev.stale .k, .ev.guard .k { background: var(--bad-soft); color: var(--bad); }
+select.slim { padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+label.chk { font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+.empty { color: var(--muted); padding: 30px; text-align: center; background: var(--panel); border: 1px dashed var(--line); border-radius: 12px; }
+dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--text); padding: 0; overflow: hidden; width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 40px); }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 42px); }
+dialog .dh { padding: 14px 18px 8px; display: flex; align-items: center; gap: 10px; }
+dialog .dh h2 { font-size: 16px; margin: 0; }
+dialog .db { padding: 4px 18px 10px; overflow-x: hidden; overflow-y: auto; }
+dialog .df { padding: 12px 18px 14px; display: flex; gap: 8px; border-top: 1px solid var(--line); }
+fieldset { border: 0; padding: 0; margin: 10px 0 4px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+fieldset legend { font-weight: 600; font-size: 13px; padding: 0; margin-bottom: 6px; color: var(--muted); }
+@media (max-width: 600px) { fieldset { grid-template-columns: minmax(0, 1fr); } }
+.f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.f.wide { grid-column: 1 / -1; }
+.f > span { font-size: 12.5px; color: var(--muted); }
+.f input:not([type=checkbox]), .f select, .f textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel2); }
+.f input:focus, .f select:focus, .f textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent); border-color: var(--accent); }
+.f small { color: var(--faint); font-size: 11.5px; }
+.f.cb { flex-direction: row; align-items: center; gap: 8px; }
+.pw { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#shotdlg img { display: block; max-width: 100%; max-height: calc(100vh - 160px); margin: 0 auto; image-rendering: pixelated; background: #000; }
+#galdlg { width: min(1100px, calc(100vw - 32px)); }
+.gal { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.gal[hidden], #galview[hidden], #galback[hidden] { display: none; }
+.gal .tile { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: var(--panel2); cursor: pointer; display: flex; flex-direction: column; }
+.gal .tile:hover, .gal .tile:focus-visible { border-color: var(--accent); outline: none; }
+.gal .tile img { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #000; display: block; }
+.gal .tile .cap { padding: 5px 7px; font-size: 12px; line-height: 1.35; }
+.gal .tile .cap .sub { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#galview img { display: block; max-width: 100%; max-height: calc(100vh - 300px); margin: 0 auto; image-rendering: pixelated; background: #000; }
+#galview .gbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+.urlrow { display: flex; gap: 6px; margin: 8px 0 4px; } .urlrow input { flex: 1; min-width: 0; }
+.tlist { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 8px; }
+.trow { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 4px 6px; border-radius: 6px; }
+.trow:hover { background: var(--panel2); } .trow.off { opacity: .6; }
+#awaybtn.awayon { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); font-weight: 600; }
+.card.flash { outline: 2px solid var(--accent); outline-offset: 2px; transition: outline-color .3s; }
+#snack { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--text); color: var(--bg);
+  padding: 9px 14px; border-radius: 9px; font-size: 13.5px; max-width: min(640px, calc(100vw - 32px)); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 50; }
+#snack.on { opacity: 1; }
+#snack.bad { background: var(--bad); color: #fff; }
+.job { margin: 10px 14px 0; padding: 8px 10px; border-radius: 9px; font-size: 12.5px; background: var(--panel2); border: 1px solid var(--line); }
+.job.done { background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.job.failed { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
+.job .bar { margin-top: 5px; }
+.drop { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 22px; margin: 6px 0 10px;
+  border: 2px dashed var(--line); border-radius: 12px; background: var(--panel2); cursor: pointer; text-align: center; }
+.drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.drop input { display: none; }
+.kv { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 4px 10px; font-size: 13px; margin: 6px 0; }
+.kv .k { color: var(--muted); }
+.msgs { margin: 8px 0; font-size: 13px; }
+.msgs div { padding: 5px 8px; border-radius: 7px; margin-top: 4px; }
+.msgs .e { background: var(--bad-soft); color: var(--bad); }
+.msgs .w { background: var(--warn-soft); color: var(--warn); }
+.opts { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; font-size: 13px; }
+.opts label { display: flex; gap: 8px; align-items: center; }
+pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+  max-height: 220px; overflow: auto; white-space: pre-wrap; margin: 8px 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>DeviceHub</h1>
+  <span class="dot" id="hubdot" title="server connection"></span>
+  <span class="summary" id="summary">connecting…</span>
+  <span class="pill warn" id="updnote" hidden>DeviceHub was updated: the page reloads when you close this</span>
+  <span class="spacer"></span>
+  <button id="awaybtn" class="small" title="Away mode: sessions' requests for a free device are approved at once, without asking you">Away mode</button>
+  <button id="notifbtn" class="small" title="Browser notifications from this page, used only when Windows notifications are off in Settings">Notify me</button>
+  <button id="settingsbtn" class="small">Settings</button>
+  <button id="installbtn" class="small" title="install one port zip on every online device at once">Install on all…</button>
+  <button id="addbtn" class="primary small">Add device</button>
+</header>
+<main>
+  <section id="alerts"></section>
+  <section id="devices"></section>
+  <aside>
+    <div class="panel">
+      <h3>Sessions <span class="sub" id="sesscount"></span></h3>
+      <div class="body" id="sessions"></div>
+    </div>
+    <div class="panel">
+      <h3>Activity <span class="spacer"></span>
+        <select class="slim" id="evdev"><option value="">all devices</option></select>
+        <label class="chk"><input type="checkbox" id="evcmd"> commands</label>
+      </h3>
+      <div class="body" id="events"></div>
+    </div>
+  </aside>
+</main>
+
+<dialog id="ed"><form method="dialog" id="edform">
+  <div class="dh"><h2 id="edtitle">Device</h2><span class="spacer"></span><button type="button" class="small" data-close>Close</button></div>
+  <div class="db" id="edbody"></div>
+  <div class="df">
+    <button type="button" class="danger" id="eddelete">Delete device</button>
+    <span class="spacer"></span>
+    <button type="button" data-close>Cancel</button>
+    <button type="submit" class="primary" id="edsave">Save</button>
+  </div>
+</form></dialog>
+
+<dialog id="setdlg"><form method="dialog" id="setform">
+  <div class="dh"><h2>Settings</h2><span class="spacer"></span><button type="button" class="small" data-close>Close</button></div>
+  <div class="db" id="setbody"></div>
+  <div class="df"><span class="spacer"></span><button type="button" data-close>Cancel</button><button type="submit" class="primary">Save</button></div>
+</form></dialog>
+
+<dialog id="shotdlg"><form method="dialog">
+  <div class="dh"><h2 id="shottitle">Screenshot</h2><span class="spacer"></span>
+    <button type="button" class="small" id="shotagain">Take another</button><button type="button" class="small" id="shotall">All screenshots</button><button type="button" class="small" data-close>Close</button></div>
+  <div class="db"><img id="shotimg" alt="device framebuffer"><p class="sub" id="shotpath"></p></div>
+</form></dialog>
+
+<dialog id="galdlg"><form method="dialog">
+  <div class="dh"><h2 id="galtitle">Screenshots</h2><span class="spacer"></span>
+    <button type="button" class="small" id="galback" hidden>← All screenshots</button>
+    <button type="button" class="small danger" id="galdelall">Delete all</button><button type="button" class="small" data-close>Close</button></div>
+  <div class="db"><div class="gal" id="galgrid"></div><div id="galview" hidden></div><p class="sub" id="galnote"></p></div>
+</form></dialog>
+
+<dialog id="condlg"><form method="dialog">
+  <div class="dh"><h2 id="contitle">Console</h2><span class="spacer"></span>
+    <label class="chk"><input type="checkbox" id="confollow" checked> follow</label>
+    <button type="button" class="small" id="conclear">Clear</button>
+    <button type="button" class="small" data-close>Close</button></div>
+  <div class="db">
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+      <select id="consrc" class="slim" style="max-width:100%;flex:1;min-width:220px"></select>
+      <button type="button" class="small" id="conrescan" title="look again for log files on the device">Rescan</button>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:6px">
+      <input id="conpath" placeholder="or follow any file: /userdata/roms/ports/game/log.txt" spellcheck="false"
+        style="flex:1;min-width:0;padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel2);font-family:var(--mono);font-size:12.5px">
+      <button type="button" class="small" id="conopen">Follow file</button>
+    </div>
+    <div class="sub" id="coninfo"></div>
+    <pre class="log" id="conpre" style="max-height:min(60vh,600px);min-height:280px"></pre>
+  </div>
+</form></dialog>
+
+<dialog id="portsdlg"><form method="dialog">
+  <div class="dh"><h2 id="portstitle">Installed ports</h2><span class="spacer"></span>
+    <input id="portsfilter" type="search" placeholder="Filter" style="padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel2);width:150px">
+    <button type="button" class="small" id="portsrefresh">Refresh</button><button type="button" class="small" data-close>Close</button></div>
+  <div class="db" id="portsbody"></div>
+</form></dialog>
+
+<dialog id="instdlg"><form method="dialog" id="instform">
+  <div class="dh"><h2 id="insttitle">Install a port</h2><span class="spacer"></span><button type="button" class="small" data-close>Close</button></div>
+  <div class="db">
+    <label class="drop" id="instdrop"><input type="file" id="instfile" accept=".zip,.squashfs,application/zip">
+      <b>Choose a port zip or a runtime .squashfs</b><span class="sub">or drop it here. A port zip is installed with the device's own PortMaster (harbourmaster), like PortMaster's autoinstall; a .squashfs runtime goes to PortMaster's libs folder.</span></label>
+    <div class="urlrow" id="insturlrow"><input id="insturl" type="url" spellcheck="false" placeholder="or install from a URL: https://…/port.zip or …/port.zip.md5">
+      <button type="button" class="small" id="insturlgo">Use URL</button></div>
+    <div id="instbody"></div>
+  </div>
+  <div class="df"><span class="spacer"></span><button type="button" data-close id="instcancel">Cancel</button>
+    <button type="submit" class="primary" id="instgo" disabled>Install</button></div>
+</form></dialog>
+
+<div id="snack"></div>
+
+<script>
+"use strict";
+const TOKEN = "__DEVHUB_TOKEN__";
+const BUILD = "__DEVHUB_BUILD__";   // the hub's page/server build this copy was served with
+const $ = (s, el = document) => el.querySelector(s);
+function sstore(k, v) { try { if (v === undefined) return sessionStorage.getItem(k); sessionStorage.setItem(k, v); } catch (e) { return null; } }
+let view = {}; try { view = JSON.parse(sstore("devhub.view") || "{}"); } catch (e) { }
+let S = null, lastEvents = [], evDev = view.evDev || "", showCmd = !!view.showCmd;
+const openMore = new Set(), seenAlerts = new Set();
+let firstAlertPass = true, shotDev = null, editing = null, pointerHeld = false;
+// never swap a card's DOM between mousedown and mouseup, or the click is lost
+document.addEventListener("pointerdown", () => { pointerHeld = true; }, true);
+document.addEventListener("pointerup", () => setTimeout(() => { pointerHeld = false; }, 50), true);
+
+function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }
+let notifyOn = store("devhub.notify") !== "0";   // on unless switched off here (the browser must allow it too)
+
+async function api(method, path, body) {
+  const init = { method, headers: { "X-DevHub-Token": TOKEN, "Content-Type": "application/json" } };
+  if (method !== "GET") init.body = JSON.stringify(Object.assign({}, body || {}, { client: "ui" }));
+  const r = await fetch(path, init);
+  let j; try { j = await r.json(); } catch (e) { j = { ok: false, error: r.status + " " + r.statusText }; }
+  if (!r.ok && j.ok !== false) j.ok = false;
+  return j;
+}
+async function act(promise, okText) {
+  const j = await promise;
+  if (j.ok === false) snack(j.error || j.msg || "failed", true); else if (okText || j.msg) snack(okText || j.msg);
+  refresh();
+  return j;
+}
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function hm(t) { return t ? new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "–"; }
+function dur(s) {
+  s = Math.max(0, Math.round(s));
+  if (s < 90) return s + " s";
+  const m = Math.round(s / 60);
+  if (m < 90) return m + " min";
+  return Math.floor(m / 60) + " h" + (m % 60 ? " " + String(m % 60).padStart(2, "0") + " min" : "");
+}
+function mins(s) { return s < 60 ? "<1 min" : dur(Math.floor(s / 60) * 60); }   // coarse: cards stay stable between polls
+function updur(s) { const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? d + "d " + h + "h" : h ? h + "h " + m + "m" : m + "m"; }
+let snackT;
+function snack(text, bad) {
+  const el = $("#snack"); el.textContent = text; el.className = "on" + (bad ? " bad" : "");
+  clearTimeout(snackT); snackT = setTimeout(() => el.className = "", bad ? 7000 : 3500);
+}
+async function copy(text) {
+  try { await navigator.clipboard.writeText(text); snack("Copied: " + text); }
+  catch (e) { prompt("Copy this:", text); }
+}
+
+// ------------------------------------------------------------ rendering
+const SSH = {
+  up: ["ok", "SSH shared"], connecting: ["warn", "SSH connecting…"], manual: ["mute", "SSH: you open it"],
+  paused: ["mute", "SSH paused"], offline: ["mute", "SSH –"], needs_password: ["warn", "needs password"],
+  auth_failed: ["bad", "login rejected"], hostkey_changed: ["bad", "host key changed"], error: ["bad", "SSH error"],
+  disabled: ["mute", "disabled"], unknown: ["mute", "SSH …"]
+};
+
+function card(d) {
+  const r = d.rt, m = r.master, s = r.status || {}, fresh = r.status_at && S.now - r.status_at < 600;
+  const net = !d.enabled ? ["mute", "disabled"] : r.online ? ["ok", "online"] : r.online === false ? ["bad", "offline"] : ["mute", "checking"];
+  const sp = SSH[m.state] || ["mute", m.state];
+  let sshLabel = sp[1];
+  if (m.state === "up") sshLabel += m.owned ? " · DeviceHub" : " · external";
+  const pills = [...(d.oos ? [`<span class="pill warn" title="sessions cannot take it until you put it back in service">⛔ out of service</span>`] : []),
+    `<span class="pill ${net[0]}">${net[1]}</span>`,`<span class="pill ${sp[0]}" title="${esc(m.msg || "")}">${esc(sshLabel)}</span>`];
+  if (d.smb) pills.push(`<span class="pill ${r.smb ? "ok" : r.smb === false ? "bad" : "mute"}" title="${esc(d.smb)}">SMB</span>`);
+  if (d.fe_proc && fresh) {
+    const on = s.fe && s.fe.length, alt = !on && d.fe_alt && s.fealt && s.fealt.length;
+    pills.push(`<span class="pill ${on || alt ? "ok" : "bad"}" ${alt ? `title="${esc(d.fe_alt)} is running (counts as the front end being up)"` : ""}>${alt ? (d.fe_alt === "lightdm" ? "desktop" : esc(d.fe_alt) + " running")
+      : `${esc(d.fe_proc === "emulationstation" ? "ES" : d.fe_proc)} ${on ? "running" : "stopped"}`}</span>`);
+  }
+  if (d.approval === "auto") pills.push(`<span class="pill acc" title="sessions ask through a DeviceHub notification; yes automatically after ${S.settings.approval_timeout_min} min">asks · auto-yes ${S.settings.approval_timeout_min} min</span>`);
+  else if (d.approval === "ask") pills.push(`<span class="pill acc" title="sessions ask and wait for your Approve/Deny">asks · waits for you</span>`);
+  if (d.guard !== "off") pills.push(`<span class="pill" title="hook guard: ${esc(d.guard)}">guard ${esc(d.guard)}</span>`);
+
+  let stats = "";
+  if (fresh) {
+    const mem = !s.MemTotal ? "–" : s.MemTotal > 4194304 ? `${(s.MemAvailable / 1048576).toFixed(1)}/${(s.MemTotal / 1048576).toFixed(1)} GB`
+      : `${Math.round(s.MemAvailable / 1024)}/${Math.round(s.MemTotal / 1024)} MB`;
+    const bat = s.bat != null ? s.bat + "%" : "–";
+    const power = s.plugged === true ? (s.batst === "Charging" ? "⚡ charging" : s.batst === "Full" ? "🔌 plugged in · full" : "🔌 plugged in")
+      : s.plugged === false ? "🔋 on battery" : (s.batst || "");
+    const batTip = [s.batst && "status: " + s.batst, s.bat_v != null && s.bat_v + " V", s.bat_ma != null && s.bat_ma + " mA",
+      ...(s.psu || []).map(p => `${p.name} (${p.type}): ${p.online ? "connected" : "not connected"}`)].filter(Boolean).join("\n");
+    stats = `<div class="stats">
+      <div class="stat" title="${esc(batTip)}"><div class="k">Battery</div><div class="v">${esc(bat)}</div><div class="s">${esc(power)}</div></div>
+      <div class="stat"><div class="k">Free RAM</div><div class="v" title="${s.SwapTotal ? "swap " + Math.round(s.SwapFree / 1024) + "/" + Math.round(s.SwapTotal / 1024) + " MB free" : "no swap"}">${mem}</div></div>
+      <div class="stat"><div class="k">Temp</div><div class="v">${s.temp != null ? s.temp + " °C" : "–"}</div></div>
+      <div class="stat"><div class="k">Load · up</div><div class="v" title="${esc(s.load || "")}">${esc((s.load || "").split(" ")[0] || "–")} · ${s.up ? updur(s.up) : "–"}</div></div>
+    </div>`;
+    if (s.app) stats += `<div class="app" title="${esc(s.app.cmd)}">Running: <b>${esc(s.app.name)}</b> · ${Math.round(s.app.rss / 1024)} MB · pid ${s.app.pid}</div>`;
+    if (s.os) stats += `<div class="app" title="kernel ${esc(s.kernel || "")}">${esc(s.os)}</div>`;
+  }
+  let msgs = "";
+  if (m.msg && m.state !== "up") msgs += `<div class="msg ${sp[0] === "bad" ? "bad" : sp[0] === "warn" ? "warn" : ""}">${esc(m.msg)}</div>`;
+  if (r.status_err && m.state === "up") msgs += `<div class="msg warn">status: ${esc(r.status_err)}</div>`;
+  if (d.oos) msgs += `<div class="msg warn">Out of service since ${hm(d.oos_since)}${d.oos_note ? ": " + esc(d.oos_note) : ""}. DeviceHub keeps watching it, but sessions can't take it until you press <i>Put back in service</i>.</div>`;
+
+  // ROCKNIX: which GPU driver is live (Mesa or vendor), and a switch in its settings still waiting for a reboot
+  let gpuDrv = "";
+  if (s.gpu_driver) {
+    const raw = s.gpu_drv_raw || "", live = /mali_kbase/.test(raw) ? "libmali" : /panthor/.test(raw) ? "panthor" : /panfrost/.test(raw) ? "panfrost" : "";
+    const pending = s.gpucfg && live && s.gpucfg !== live ? `; set to ${s.gpucfg}, active after a reboot` : "";
+    gpuDrv = ` (driver: ${s.gpu_driver}${pending})`;
+  }
+  const hw = [d.type, d.soc, d.gpu ? d.gpu + gpuDrv : gpuDrv.trim(), d.ram_mb ? d.ram_mb + " MB" : "", d.screen].filter(Boolean).join(" · ");
+  const connBtn = d.auth === "manual"
+    ? `<button class="small" data-act="copyopen">Copy open command</button>`
+    : (d.paused || m.state === "paused" ? `<button class="small" data-act="connect">Connect</button>` :
+       m.state === "up" ? `<button class="small" data-act="disconnect">Disconnect</button>` :
+       `<button class="small" data-act="connect">${m.state === "auth_failed" || m.state === "error" ? "Retry" : "Connect"}</button>`);
+  const up = d.enabled && r.online !== false && (m.state === "up" || (d.auth === "key" && r.online === true));
+  return `<div class="card ${d.enabled && !d.oos ? "" : "off"}" data-dev="${esc(d.id)}">
+    <div class="card-head"><div style="min-width:0">
+      <h2>${esc(d.name)}</h2>
+      ${d.cards && d.cards.length > 1 ? `<div class="sub">SD card <select class="cardsel" data-cardsel="${esc(d.id)}" title="which SD card is in the device (DeviceHub also switches by itself when it recognises a card's SSH host key)">${d.cards.map(c => `<option value="${esc(c.id)}" ${c.id === d.card ? "selected" : ""}>${esc(c.label)} · ${esc(c.cfw)}</option>`).join("")}</select></div>` : ""}
+      <div class="sub"><span class="mono">${esc(d.id)}</span> · ${esc(d.cfw || "?")} ·<span class="mono">${esc(d.user)}@${esc(d.host)}${d.port !== 22 ? ":" + d.port : ""}</span></div>
+      ${hw || d.rc ? `<div class="sub">${esc(hw)}${d.rc ? ` · <a href="${esc(d.rc.url)}" target="_blank" rel="noopener" title="${esc([d.rc.name, d.rc.cpu, d.rc.size && d.rc.size + " " + (d.rc.aspect || ""), d.rc.battery, d.rc.storage && "storage " + d.rc.storage, d.rc.released && "released " + d.rc.released].filter(Boolean).join("\n"))}">Retro Catalog ↗</a>` : ""}</div>` : ""}
+    </div></div>
+    <div class="pills">${pills.join("")}</div>
+    ${stats}${msgs}
+    ${lockBox(d)}
+    <div class="actions">
+      ${connBtn}
+      ${d.fe_start ? `<button class="small" data-act="fe" data-x="restart" ${up ? "" : "disabled"}>Restart front end</button>` : ""}
+      <button class="small" data-act="install" ${up && !(d.job && d.job.state === "running") ? "" : "disabled"}>Install port…</button>
+      <button class="small" data-act="ports" ${up ? "" : "disabled"}>Installed ports</button>
+      <button class="small" data-act="console" ${up ? "" : "disabled"} title="watch what the device and sessions print, for things that show nothing on screen">Console</button>
+      <button class="small" data-act="shot" ${up ? "" : "disabled"}>Screenshot</button>
+      <button class="small" data-act="shots" title="past screenshots of this device">Screenshots</button>
+      <button class="small" data-act="copyssh">Copy SSH</button>
+      <button class="small" data-act="edit">Edit</button>
+    </div>
+    ${d.job ? jobBox(d.job) : ""}
+    <details class="more" data-more="${esc(d.id)}" ${openMore.has(d.id) ? "open" : ""}><summary>More…</summary>
+      <div class="actions">
+        ${d.fe_start ? `<button class="small" data-act="fe" data-x="start" ${up ? "" : "disabled"}>Start front end</button>` : ""}
+        ${d.fe_stop ? `<button class="small" data-act="fe" data-x="stop" ${up ? "" : "disabled"}>Stop front end</button>` : ""}
+        <button class="small danger" data-act="shutdown" ${up ? "" : "disabled"}>Shut down</button>
+        <button class="small" data-act="service">${d.oos ? "Put back in service" : "Take out of service"}</button>
+        <button class="small" data-act="refresh">Refresh status</button>
+        ${d.auth !== "manual" ? `<button class="small" data-act="copyopen">Copy open command</button>` : ""}
+        ${d.smb ? `<button class="small" data-act="copysmb">Copy SMB path</button>` : ""}
+        <button class="small" data-act="copyacq">Copy acquire command</button>
+        ${m.state === "hostkey_changed" ? `<button class="small danger" data-act="hostkey">Forget host key</button>` : ""}
+      </div>
+      <div class="sub" style="margin-top:6px">socket <span class="mono">${esc(d.socket)}</span>${d.ports_dir ? ` · ports <span class="mono">${esc(d.ports_dir)}</span>` : ""}${m.pid ? " · master pid " + m.pid : ""}</div>
+    </details>
+    ${d.notes ? `<div class="notes">${esc(d.notes)}</div>` : ""}
+    <div class="card-foot"></div>
+  </div>`;
+}
+
+function jobPct(j) { return j.total ? Math.min(100, Math.round(100 * j.sent / j.total)) : 0; }
+function jobBox(j) {
+  const what = esc(j.title || j.name);
+  if (j.state === "running") return `<div class="job">⏳ Installing <b>${what}</b>: ${esc(j.step)}${j.step === "sending" ? " " + jobPct(j) + "%" : ""} · by ${esc(j.who)}
+    ${j.step === "sending" ? `<div class="bar"><i style="width:${Math.round(jobPct(j) / 5) * 5}%"></i></div>` : ""}</div>`;
+  if (j.state === "done") return `<div class="job done">✓ ${esc(j.result)} <span class="sub">(${hm(j.ended)})</span>${j.warning ? `<div class="msg warn" style="padding:4px 0 0">${esc(j.warning)}</div>` : ""}</div>`;
+  return `<div class="job failed">✗ Install of <b>${what}</b> failed: ${esc(j.error)} <span class="sub">(${hm(j.ended)})</span></div>`;
+}
+
+function lockBox(d) {
+  const lk = d.lock;
+  let extra = "";
+  const dn = id => (S.devices.find(x => x.id === id) || {}).name || id;
+  for (const [i, e] of (d.queue || []).entries()) extra += e.offer_from
+    ? `<div class="q">Came online: held for <b>${esc(e.name)}</b> until ${hm(e.until)} (it waited longest, for the ${esc(dn(e.offer_from))}) – ${esc(e.purpose)}</div>`
+    : `<div class="q">${i + 1}. waiting: <b>${esc(e.name)}</b> – ${esc(e.purpose)} (since ${hm(e.at)})${e.need ? `<br>needs this device: <i>${esc(e.need)}</i>` : ""}${e.held ? `<br>offered another device, deciding; place kept until ${hm(e.until)}` : ""}</div>`;
+  for (const x of d.requests || []) extra += `<div class="req"><span>🙋 <b>${esc(x.name)}</b> asks: ${esc(x.purpose)}${x.deadline ? ` <span class="sub" style="display:inline">· yes automatically at ${hm(x.deadline)}</span>` : ""}</span>
+      <button class="small primary" data-act="approve" data-s="${esc(x.session || "")}" data-n="${esc(x.name)}">Approve</button>
+      <button class="small" data-act="deny" data-s="${esc(x.session || "")}" data-n="${esc(x.name)}">Deny</button></div>`;
+  const chain = d.chain_until && d.chain_until > S.now ? `<div class="q">Request chain: the next session's request is approved at once until ${hm(d.chain_until)}</div>` : "";
+  // offline and nobody holds it: nothing to take; only sessions waiting for it to come online are shown
+  if (!lk && d.rt.online !== true) return extra ? `<div class="lock free">${extra}</div>` : "";
+  if (!lk) return `<div class="lock free"><div class="lock-row"><span class="lock-title">Free</span><span class="spacer"></span>
+      <button class="small" data-act="take">I'm using it</button></div>${chain}${extra}</div>`;
+  const left = lk.lease_until - S.now, pct = Math.max(0, Math.min(100, 100 * left / Math.max(60, lk.ttl)));
+  const me = lk.holder.ui;
+  const badge = { held: `<span class="pill acc">held</span>`, check: `<span class="pill warn">asked: still needed?</span>`, stale: `<span class="pill bad">no answer</span>` }[lk.state] || "";
+  const verdict = lk.verdict ? `<span class="pill ${lk.verdict === "looks finished" || lk.verdict === "left dirty?" ? "warn" : lk.verdict === "idle" ? "mute" : "ok"}">${esc(lk.verdict)}</span>` : "";
+  let check = "";
+  if (lk.check) {
+    const c = lk.check;
+    check = `<div class="meta">Asked ${hm(c.asked)}: ${esc(c.reason)}. ${c.delivered ? "Seen by the holder at " + hm(c.delivered) : "Not seen by the holder yet"}${lk.state === "check" ? "; answer due " + hm(c.deadline) : ""}.</div>`;
+  }
+  const btns = me
+    ? `<button class="small" data-act="extend">+30 min</button><button class="small" data-act="release">Release</button>`
+    : `${lk.state === "held" ? `<button class="small" data-act="ask">Ask if still needed</button>` : ""}
+       <button class="small" data-act="extend">+30 min</button>
+       <button class="small danger" data-act="forcerelease">Force release</button>`;
+  return `<div class="lock ${esc(lk.state)}">
+    <div class="lock-row"><span class="lock-title">🔒 ${esc(lk.holder.name)}${me ? " (you)" : ""}</span>${badge}${verdict}</div>
+    <div class="purpose">${esc(lk.purpose)}</div>
+    <div class="meta">since ${hm(lk.since)} · lease ${left > 0 ? "ends " + hm(lk.lease_until) + " (" + mins(left) + " left)" : "ran out " + mins(-left) + " ago"} · holder active ${lk.idle < 60 ? "just now" : mins(lk.idle) + " ago"}${lk.watch ? " · watching <span class=mono>" + esc(lk.watch) + "</span>" : ""}${lk.renewals ? " · renewed " + lk.renewals + "×" : ""}</div>
+    ${lk.note ? `<div class="meta">note: ${esc(lk.note)}</div>` : ""}
+    ${check}
+    <div class="meta">${esc(lk.evidence || "")}</div>
+    <div class="bar"><i style="width:${Math.round(pct / 5) * 5}%"></i></div>
+    <div class="btns">${btns}</div>${extra}
+  </div>`;
+}
+
+function render() {
+  const away = !!(S.settings && S.settings.away_mode), ab = $("#awaybtn");
+  ab.textContent = away ? "Away mode: ON" : "Away mode";
+  ab.classList.toggle("awayon", away);
+  // locked devices first, then online, then offline, then out of service; otherwise the usual order
+  const rank = d => d.lock ? 0 : d.oos ? 3 : d.rt.online === true ? 1 : 2;
+  const devs = S.devices.map((d, i) => [d, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
+  const on = devs.filter(d => d.rt.online).length, locked = devs.filter(d => d.lock).length;
+  $("#summary").textContent = `${devs.length} device${devs.length === 1 ? "" : "s"} · ${on} online · ${locked} locked · v${S.version}`;
+  const box = $("#devices");
+  if (pointerHeld) { renderAlerts(); return; }
+  if (!devs.length) box.innerHTML = `<div class="empty">No devices yet. <button class="primary small" onclick="openEditor(null)">Add device</button></div>`;
+  else {
+    if (box.querySelector(".empty")) box.innerHTML = "";
+    const want = new Set(devs.map(d => d.id));
+    for (const el of [...box.children]) if (!want.has(el.dataset.dev)) el.remove();
+    devs.forEach((d, i) => {
+      const html = card(d);
+      let el = box.querySelector(`[data-dev="${CSS.escape(d.id)}"]`);
+      if (el && el._html === html) { if (box.children[i] !== el) box.insertBefore(el, box.children[i] || null); return; }
+      const t = document.createElement("template"); t.innerHTML = html.trim();
+      const nel = t.content.firstElementChild; nel._html = html;
+      if (el) el.remove();
+      box.insertBefore(nel, box.children[i] || null);
+    });
+  }
+  renderAlerts(); renderSessions();
+  const sel = $("#evdev"), opts = ['<option value="">all devices</option>'].concat(devs.map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`)).join("");
+  if (sel._opts !== opts) { sel.innerHTML = opts; sel._opts = opts; sel.value = evDev; }
+}
+
+// one notification per event: while this page notifies, it tells the hub (?notify=1) and the hub sends no Windows
+// toast; with no such page open the hub's toast stands in. Clicking brings this page up at the device.
+function canNotify() { return notifyOn && "Notification" in window && Notification.permission === "granted"; }
+const clientLogged = new Set();
+function clientLog(msg) {   // once per page load per message: to devhubd.log, for tracing notification trouble
+  if (clientLogged.has(msg)) return; clientLogged.add(msg);
+  api("POST", "/api/client-log", { msg: "page: " + msg }).catch(() => {});
+}
+// notifications go through the service worker (sw.js) so a session's request can carry Approve / Deny buttons
+let swReg = null;
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").then(r => { swReg = r; })
+    .catch(e => clientLog("service worker NOT registered: " + e));
+  navigator.serviceWorker.addEventListener("message", e => {
+    const m = e.data || {};
+    if (m.type === "devhub-focus" && m.dev) focusDev(m.dev);
+    if (m.type === "devhub-answered") {
+      if (m.ok) snack(`${m.action === "approve" ? "Approved" : "Denied"} ${m.name}'s request`);
+      else snack(`Could not ${m.action} ${m.name}'s request: ${m.msg}`, true);
+      refresh();
+    }
+  });
+}
+function browserNotify(key, title, body, dev, request) {
+  if (seenAlerts.has(key)) return;
+  seenAlerts.add(key);
+  if (firstAlertPass || !canNotify()) return;
+  // a tab still running an older page (it waits to reload while a dialog is open) must not notify: its
+  // notifications may be built the old way
+  if (S && S.build && S.build !== BUILD) return;
+  // the tag stops a second open DeviceHub tab from showing the same notification again; kept short (Windows caps
+  // a notification's tag at 64 characters)
+  const opts = { body, tag: shortTag(key), requireInteraction: !!request, data: { dev, title, token: TOKEN, key } };
+  if (swReg) {
+    if (request) {
+      opts.actions = [{ action: "approve", title: "Approve" }, { action: "deny", title: "Deny" }];
+      Object.assign(opts.data, { session: request.session || null, name: request.name });
+    }
+    swReg.showNotification(title, opts).catch(e => clientLog("showNotification failed: " + e));
+    return;
+  }
+  delete opts.data.token;
+  const n = new Notification(title, opts);
+  n.onclick = () => { window.focus(); n.close(); if (dev) focusDev(dev); };
+}
+function shortTag(key) {   // "req-…"/"alert-…" + a hash of the full key, well under Windows' 64 characters
+  let h = 5381;
+  for (let i = 0; i < key.length; i++) h = ((h * 33) ^ key.charCodeAt(i)) >>> 0;
+  return key.split("|")[0] + "-" + h.toString(36);
+}
+// a request answered elsewhere (this page, another tab, timed out): its notification goes away. Only asked when a
+// request has just gone: Chrome's getNotifications() drops notifications Windows does not list (yet), and a
+// notification dropped that way silently loses its button clicks.
+let lastLiveReq = new Set();
+function closeAnswered(liveKeys) {
+  const gone = [...lastLiveReq].some(k => !liveKeys.has(k));
+  lastLiveReq = liveKeys;
+  if (!swReg || !gone) return;
+  swReg.getNotifications().then(ns => ns.forEach(n => {
+    const k = (n.data || {}).key;
+    if (k && k.startsWith("req|") && !liveKeys.has(k)) n.close();
+  })).catch(() => {});
+}
+function focusDev(dev) {
+  const el = document.querySelector(`#devices [data-dev="${CSS.escape(dev)}"]`); if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 2200);
+}
+
+function renderAlerts() {
+  const out = [], liveReq = new Set();
+  for (const d of S.devices) for (const x of d.requests || []) {
+    liveReq.add(`req|${d.id}|${x.session || x.name}|${x.at}`);
+    out.push(`<div class="alert ask" data-dev="${esc(d.id)}"><span class="t">${hm(x.at)}</span><span class="txt"><b>${esc(x.name)}</b> asks to use <b>${esc(d.name)}</b>: ${esc(x.purpose)}${x.deadline ? ` · <b>yes automatically at ${hm(x.deadline)}</b> unless you deny` : ""}</span>
+      <button class="small primary" data-act="approve" data-s="${esc(x.session || "")}" data-n="${esc(x.name)}">Approve</button>
+      <button class="small" data-act="deny" data-s="${esc(x.session || "")}" data-n="${esc(x.name)}">Deny</button></div>`);
+    browserNotify(`req|${d.id}|${x.session || x.name}|${x.at}`, `DeviceHub · ${d.name}`,
+      `${x.name} asks to use it: ${x.purpose}${x.deadline ? ` (yes automatically at ${hm(x.deadline)})` : ""}`, d.id, x);
+  }
+  for (const a of [...S.alerts].reverse()) {
+    if (a.kind === "approval") continue;   // shown once, as the Approve/Deny row above
+    const dn = a.dev ? (S.devices.find(x => x.id === a.dev) || {}).name : "";
+    out.push(`<div class="alert" data-dev="${esc(a.dev || "")}"><span class="t">${hm(a.t)}</span><span class="txt">${dn ? `<b>${esc(dn)}</b> · ` : ""}${esc(a.text)}</span>
+      <button class="small" data-act="dismiss" data-id="${a.id}">Dismiss</button></div>`);
+    browserNotify("alert|" + a.id, a.title || "DeviceHub", a.text, a.dev);
+  }
+  if (!firstAlertPass) closeAnswered(liveReq);
+  firstAlertPass = false;
+  const html = out.join("");
+  const el = $("#alerts"); if (el._html !== html) { el.innerHTML = html; el._html = html; }
+}
+
+function renderSessions() {
+  const rows = S.sessions.map(s => `<div class="sess">
+      <span class="n" data-sess="${esc(s.id)}" title="${esc(s.id)} – click to rename">${esc(s.name)}</span>
+      <span class="sub mono">${esc(s.id.slice(0, 8))}</span><span class="spacer"></span>
+      ${s.locks.length ? `<span class="pill acc">🔒 ${esc(s.locks.join(", "))}</span>` : ""}
+      ${s.ended ? `<span class="pill">ended</span>` : `<span class="sub">${S.now - s.last < 60 ? "just now" : mins(S.now - s.last) + " ago"}</span>`}
+    </div>`).join("");
+  const html = rows || `<div class="sub">No live Claude sessions (holding or waiting for a device, or active in the last hour).</div>`;
+  const el = $("#sessions"); if (el._html !== html) { el.innerHTML = html; el._html = html; }
+  $("#sesscount").textContent = S.sessions.length ? `(${S.sessions.length})` : "";
+}
+
+function renderEvents() {
+  const list = lastEvents.filter(e => (!evDev || e.dev === evDev) && (showCmd || e.kind !== "cmd")).slice(-250).reverse();
+  const names = Object.fromEntries((S ? S.devices : []).map(d => [d.id, d.name]));
+  const html = list.map(e => `<div class="ev ${esc(e.kind)}"><span class="t">${hm(e.t)}</span><span class="d" title="${esc(e.dev || "")}">${esc(e.dev ? (names[e.dev] || e.dev) : "hub")}</span>
+    <span class="m"><span class="k">${esc(e.kind)}</span>${esc(e.msg)}</span></div>`).join("") || `<div class="sub">Nothing yet.</div>`;
+  const el = $("#events"); if (el._html !== html) { el.innerHTML = html; el._html = html; }
+}
+
+// DeviceHub was updated (new page or restarted server): reload, but never in the middle of something
+function reloadWhenIdle() {
+  const ae = document.activeElement;
+  const busy = [...document.querySelectorAll("dialog")].some(d => d.open) || pointerHeld ||
+    (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && !ae.closest("header"));
+  if (busy) { $("#updnote").hidden = false; return false; }
+  sstore("devhub.view", JSON.stringify({ evDev, showCmd }));
+  location.reload();
+  return true;
+}
+
+async function refresh() {
+  try {
+    const j = await api("GET", "/api/state" + (canNotify() ? "?notify=1" : ""));
+    if (j.ok === false) throw new Error(j.error);
+    S = j; $("#hubdot").className = "dot ok"; $("#hubdot").title = "connected";
+    if (j.build && j.build !== BUILD && reloadWhenIdle()) return;
+    render();
+  } catch (e) {
+    $("#hubdot").className = "dot bad"; $("#hubdot").title = "DeviceHub server not reachable";
+    $("#summary").textContent = "DeviceHub server not reachable – start it with: devhub start";
+  }
+}
+async function refreshEvents() {
+  try { const j = await api("GET", "/api/events?n=1000"); if (j.events) { lastEvents = j.events; renderEvents(); } } catch (e) { }
+}
+
+// ------------------------------------------------------------ actions
+document.addEventListener("toggle", e => {
+  const m = e.target.closest && e.target.closest("details.more");
+  if (m) { if (m.open) openMore.add(m.dataset.more); else openMore.delete(m.dataset.more); }
+}, true);
+
+// which SD card is in a device (card profiles)
+document.addEventListener("change", async e => {
+  const sel = e.target.closest("select[data-cardsel]"); if (!sel) return;
+  const d = S.devices.find(x => x.id === sel.dataset.cardsel), c = d && d.cards.find(x => x.id === sel.value);
+  if (!d || !c) return;
+  const lk = d.lock && !d.lock.holder.ui ? `\n\n${d.lock.holder.name} holds it ("${d.lock.purpose}"); it is told the card changed.` : "";
+  if (!confirm(`Use the ${c.label} card profile on ${d.name}? (${c.cfw}, user ${c.user})\nThe shared connection is reopened with that card's login.${lk}`)) { sel.value = d.card; return; }
+  await act(api("POST", `/api/devices/${d.id}/card`, { card: c.id }));
+});
+
+document.addEventListener("click", async e => {
+  const sessEl = e.target.closest("[data-sess]");
+  if (sessEl) {
+    const name = prompt("Name for this session:", sessEl.textContent);
+    if (name && name.trim()) act(api("POST", "/api/session", { target: sessEl.dataset.sess, name: name.trim() }), "Renamed");
+    return;
+  }
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  const host = b.closest("[data-dev]"), dev = host && host.dataset.dev, d = S && S.devices.find(x => x.id === dev);
+  const a = b.dataset.act;
+  if (a === "dismiss") return act(api("POST", "/api/alerts/dismiss", { id: +b.dataset.id }), " ");
+  if (!d) return;
+  const lk = d.lock;
+  switch (a) {
+    case "edit": return openEditor(d);
+    case "copyssh": return copy(d.ssh_cmd);
+    case "copyopen": return copy(d.open_cmd);
+    case "copysmb": return copy(d.smb);
+    case "copyacq": return copy(`devhub acquire ${d.id} "purpose" --for 30m`);
+    case "connect": return act(api("POST", `/api/devices/${dev}/connect`));
+    case "disconnect":
+      if (!confirm(`Close the shared SSH connection to ${d.name}? Sessions using it lose their link until you press Connect.`)) return;
+      return act(api("POST", `/api/devices/${dev}/disconnect`));
+    case "refresh": return act(api("POST", `/api/devices/${dev}/refresh`), "Refreshing…");
+    case "service": {
+      if (d.oos) return act(api("POST", `/api/devices/${dev}/service`, { out: false }));
+      const held = lk && !lk.holder.ui ? `\n\n${lk.holder.name} holds it now ("${lk.purpose}"): its lock stays, and it is asked to finish up and release.` : "";
+      const note = prompt(`Take ${d.name} out of service?\nSessions can't take it (waiting ones are moved or told); DeviceHub keeps checking it.${held}\n\nReason (optional):`, "");
+      if (note === null) return;
+      return act(api("POST", `/api/devices/${dev}/service`, { out: true, note }));
+    }
+    case "shutdown": {
+      const app = d.rt.status && d.rt.status.app;
+      const warn = [
+        lk && !lk.holder.ui ? `⚠ ${lk.holder.name} holds it ("${lk.purpose}"): its lock is released and it is told the device shut down.` : "",
+        lk && lk.holder.ui ? `You hold its lock ("${lk.purpose}"); it is released.` : "",
+        app ? `⚠ ${app.name} is running and will be closed (unsaved progress is lost).` : "",
+      ].filter(Boolean).join("\n");
+      if (!confirm(`Shut down ${d.name}?\n\nThe front end is stopped first (it saves its settings and game lists), then the device powers off. You switch it back on by hand.${warn ? "\n\n" + warn : ""}`)) return;
+      b.disabled = true;
+      return act(api("POST", `/api/devices/${dev}/shutdown`));
+    }
+    case "hostkey":
+      if (!confirm(`Forget the saved host key for ${d.host}? Only do this if the device was reflashed or replaced.`)) return;
+      return act(api("POST", `/api/devices/${dev}/forget-hostkey`));
+    case "fe": {
+      const x = b.dataset.x;
+      if (lk && !lk.holder.ui && !confirm(`${lk.holder.name} holds ${d.name} ("${lk.purpose}"). ${x} the front end anyway?`)) return;
+      b.disabled = true; snack(`Front end ${x} on ${d.name}… (verifying ~15 s)`);
+      try { await act(api("POST", `/api/devices/${dev}/frontend`, { action: x })); } finally { b.disabled = false; }
+      return;
+    }
+    case "shot": return takeShot(dev);
+    case "shots": return openGallery(dev);
+    case "install": return openInstall(d);
+    case "ports": return openPorts(d);
+    case "console": return openConsole(d);
+    case "take": {
+      const purpose = prompt(`What are you using ${d.name} for?`, "my own testing");
+      if (purpose === null) return;
+      return act(api("POST", "/api/lock/acquire", { dev, purpose: purpose || "my own testing", take: true }));
+    }
+    case "extend": return act(api("POST", "/api/lock/renew", { dev, ttl: "30m", note: lk && !lk.holder.ui ? "extended by the user" : "" }));
+    case "release": return act(api("POST", "/api/lock/release", { dev }));
+    case "forcerelease":
+      if (!confirm(`Take the lock away from ${lk.holder.name} ("${lk.purpose}")? They are told the next time they act.`)) return;
+      return act(api("POST", "/api/lock/release", { dev, force: true }));
+    case "ask": {
+      const text = prompt(`Ask ${lk.holder.name} whether it still needs ${d.name}. Optional message:`, "");
+      if (text === null) return;
+      return act(api("POST", "/api/lock/ask", { dev, text }));
+    }
+    case "approve": case "deny":
+      return act(api("POST", "/api/lock/approve", { dev, session: b.dataset.s || null, name: b.dataset.n, allow: a === "approve" }));
+  }
+});
+
+async function takeShot(dev) {
+  shotDev = dev;
+  const d = S.devices.find(x => x.id === dev);
+  snack(`Screenshot of ${d.name}…`);
+  const j = await api("POST", `/api/devices/${dev}/screenshot`);
+  if (j.ok === false) return snack(j.error || "screenshot failed", true);
+  $("#shottitle").textContent = `${d.name} · ${j.w}×${j.h}`;
+  $("#shotimg").src = `/shots/${encodeURIComponent(j.file)}?t=${TOKEN}`;
+  $("#shotpath").textContent = j.path;
+  const dlg = $("#shotdlg"); if (!dlg.open) dlg.showModal();
+}
+$("#shotagain").onclick = () => shotDev && takeShot(shotDev);
+$("#shotall").onclick = () => { if (shotDev) { $("#shotdlg").close(); openGallery(shotDev); } };
+
+// past screenshots of a device: thumbnails, full-size view, download, delete
+let galDev = null, galShots = [], galKeep = 30;
+const shotUrl = f => `/shots/${encodeURIComponent(f)}?t=${TOKEN}`;
+const shotWhen = t => new Date(t * 1000).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+async function openGallery(dev) {
+  galDev = dev;
+  const d = S.devices.find(x => x.id === dev);
+  $("#galtitle").textContent = `Screenshots · ${d.name}`;
+  const dlg = $("#galdlg"); if (!dlg.open) dlg.showModal();
+  await loadGallery();
+}
+async function loadGallery(viewFile) {
+  const j = await api("GET", `/api/devices/${galDev}/shots`);
+  if (j.ok === false) return snack(j.error || "could not list screenshots", true);
+  galShots = j.shots; galKeep = j.keep;
+  $("#galgrid").innerHTML = galShots.map((s, i) => `<div class="tile" tabindex="0" data-i="${i}">
+      <img loading="lazy" src="${shotUrl(s.file)}" alt="">
+      <div class="cap">${esc(shotWhen(s.t))}<span class="sub">${esc(s.who || "unknown")}${s.w ? ` · ${s.w}×${s.h}` : ""}</span></div></div>`).join("")
+    || `<div class="sub">No screenshots of this device.</div>`;
+  $("#galdelall").disabled = !galShots.length;
+  $("#galnote").textContent = galShots.length ? `${galShots.length} screenshot${galShots.length === 1 ? "" : "s"} · DeviceHub keeps the newest ${galKeep} per device` : "";
+  const v = viewFile ? galShots.findIndex(s => s.file === viewFile) : -1;
+  v >= 0 ? galShow(v) : galGrid();
+}
+function galGrid() { $("#galview").hidden = true; $("#galback").hidden = true; $("#galgrid").hidden = false; }
+function galShow(i) {
+  const s = galShots[i]; if (!s) return galGrid();
+  $("#galgrid").hidden = true; $("#galback").hidden = false;
+  const v = $("#galview"); v.hidden = false; v.dataset.i = i;
+  v.innerHTML = `<div class="gbar" style="margin:0 0 8px"><button type="button" class="small" data-g="prev" ${i > 0 ? "" : "disabled"}>← Newer</button>
+      <button type="button" class="small" data-g="next" ${i < galShots.length - 1 ? "" : "disabled"}>Older →</button>
+      <span><b>${esc(shotWhen(s.t))}</b> · ${esc(s.who || "unknown")}${s.w ? ` · ${s.w}×${s.h}` : ""} · ${Math.max(1, Math.round(s.size / 1024))} KB</span>
+      <span class="spacer"></span>
+      <button type="button" class="small" data-g="dl">Download</button>
+      <button type="button" class="small danger" data-g="del">Delete</button></div>
+    <img src="${shotUrl(s.file)}" alt="screenshot">`;
+  v.closest(".db").scrollTop = 0;
+}
+$("#galgrid").addEventListener("click", e => { const t = e.target.closest(".tile"); if (t) galShow(+t.dataset.i); });
+$("#galgrid").addEventListener("keydown", e => { const t = e.target.closest(".tile"); if (t && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); galShow(+t.dataset.i); } });
+$("#galback").onclick = galGrid;
+$("#galview").addEventListener("click", async e => {
+  const b = e.target.closest("[data-g]"); if (!b) return;
+  const i = +$("#galview").dataset.i, s = galShots[i];
+  if (b.dataset.g === "prev") return galShow(i - 1);
+  if (b.dataset.g === "next") return galShow(i + 1);
+  if (b.dataset.g === "dl") { const a = document.createElement("a"); a.href = shotUrl(s.file); a.download = s.file; document.body.append(a); a.click(); a.remove(); return; }
+  if (b.dataset.g === "del") {
+    if (!confirm(`Delete the screenshot from ${shotWhen(s.t)}?`)) return;
+    const j = await api("DELETE", `/api/devices/${galDev}/shots/${encodeURIComponent(s.file)}`);
+    if (j.ok === false) return snack(j.error || "delete failed", true);
+    snack("Screenshot deleted");
+    const next = galShots[i + 1] || galShots[i - 1];
+    await loadGallery(next && next.file);
+  }
+});
+$("#galdlg").addEventListener("keydown", e => {
+  if ($("#galview").hidden) return;
+  const i = +$("#galview").dataset.i;
+  if (e.key === "ArrowLeft") { e.preventDefault(); galShow(Math.max(0, i - 1)); }
+  if (e.key === "ArrowRight") { e.preventDefault(); galShow(Math.min(galShots.length - 1, i + 1)); }
+});
+$("#galdelall").onclick = async () => {
+  const d = S.devices.find(x => x.id === galDev);
+  if (!confirm(`Delete all ${galShots.length} screenshots of ${d.name}? This cannot be undone.`)) return;
+  const j = await api("DELETE", `/api/devices/${galDev}/shots/all.png`);
+  if (j.ok === false) return snack(j.error || "delete failed", true);
+  snack(j.msg); loadGallery();
+};
+
+$("#evdev").onchange = e => { evDev = e.target.value; renderEvents(); };
+$("#evcmd").onchange = e => { showCmd = e.target.checked; renderEvents(); };
+$("#evcmd").checked = showCmd;
+document.querySelectorAll("dialog").forEach(dl => dl.addEventListener("click", e => { if (e.target.closest("[data-close]")) dl.close(); }));
+$("#notifbtn").onclick = async () => {
+  if (!("Notification" in window)) return snack("This browser has no notifications", true);
+  if (!notifyOn) {
+    const p = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+    if (p !== "granted") return snack("Notifications were not allowed", true);
+  }
+  notifyOn = !notifyOn; store("devhub.notify", notifyOn ? "1" : "0"); syncNotifBtn();
+  snack(notifyOn ? "Notifications now come from this page (click one to come back here). With no DeviceHub page open, Windows notifications stand in."
+    : "Page notifications off: Windows notifications again");
+  refresh();
+};
+function syncNotifBtn() {
+  $("#notifbtn").textContent = canNotify() ? "Notifying ✓" : "Notify me";
+  $("#notifbtn").title = canNotify() ? "This page shows DeviceHub's notifications; click to switch back to Windows notifications"
+    : "Get DeviceHub's notifications from this page (click one to come back here) instead of Windows notifications";
+}
+syncNotifBtn();
+// opened from a Windows notification (…/#dev=<id>): show that device
+if (/^#dev=/.test(location.hash)) {
+  const want = decodeURIComponent(location.hash.slice(5));
+  history.replaceState(null, "", location.pathname);
+  const tryFocus = (n) => document.querySelector(`#devices [data-dev="${CSS.escape(want)}"]`) ? focusDev(want) : n && setTimeout(() => tryFocus(n - 1), 500);
+  tryFocus(10);
+}
+
+// ------------------------------------------------------------ console: what the device and sessions print
+let con = null;   // {dev, src: "@sessions" | path, seq, offset, timer, text}
+function openConsole(d, path) {   // path: open on that file (a port's log from Installed ports)
+  con = { dev: d.id, src: "@sessions", seq: 0, offset: -1, text: "", timer: null, want: path || null };
+  $("#contitle").textContent = `Console · ${d.name}`;
+  $("#conpre").textContent = "";
+  $("#conpath").value = "";
+  $("#condlg").showModal();
+  loadConsoleSources();
+}
+async function loadConsoleSources() {
+  const sel = $("#consrc"), keep = sel.value;
+  $("#coninfo").textContent = "Looking for logs on the device…";
+  const j = await api("GET", `/api/devices/${con.dev}/console/sources`);
+  const opts = [["@sessions", "Sessions' commands on this device (devhub run)"]];
+  if (j.ok !== false) for (const s of j.sources) opts.push([s.path, `${s.label}: ${s.path}`]);
+  if (con.want && !opts.some(o => o[0] === con.want)) opts.push([con.want, "file: " + con.want]);
+  sel.innerHTML = opts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
+  const app = j.ok !== false && j.app;
+  // a file asked for comes first, then a running app with an output file, else the sessions' commands
+  const first = con.want || (keep && opts.some(o => o[0] === keep) ? keep : (app && opts.length > 1 ? opts[1][0] : "@sessions"));
+  con.want = null;
+  sel.value = first;
+  $("#coninfo").textContent = j.ok === false ? j.error : app ? `Running now: ${app.name} (pid ${app.pid})` : "No app running right now.";
+  switchConsole(first);
+}
+function switchConsole(src) {
+  con.src = src; con.seq = 0; con.offset = -1; con.text = "";
+  $("#conpre").textContent = "";
+  clearTimeout(con.timer);
+  pollConsole();
+}
+function conAppend(s) {
+  con.text = (con.text + s).slice(-300000);
+  const pre = $("#conpre");
+  pre.textContent = con.text;
+  if ($("#confollow").checked) pre.scrollTop = pre.scrollHeight;
+}
+async function pollConsole() {
+  if (!con || !$("#condlg").open) return;
+  const mine = con.src;
+  try {
+    if (mine === "@sessions") {
+      const j = await api("GET", `/api/devices/${con.dev}/console/log?since=${con.seq}`);
+      if (con.src !== mine) return;
+      if (j.lines && j.lines.length) {
+        if (!con.seq) { con.text = ""; }
+        conAppend(j.lines.map(l => {
+          const t = new Date(l.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+          return l.stream === "cmd" ? `\n[${t}] ${l.who}: ${l.text}\n` : `${l.stream === "err" ? "! " : ""}${l.text}\n`;
+        }).join(""));
+        con.seq = j.seq;
+      } else if (!con.text) conAppend("(nothing yet: the output of `devhub run` commands on this device shows up here)\n");
+    } else {
+      const j = await api("GET", `/api/devices/${con.dev}/console/file?path=${encodeURIComponent(mine)}&offset=${con.offset}`);
+      if (con.src !== mine) return;
+      if (j.ok === false) { $("#coninfo").textContent = j.error; }
+      else {
+        if (j.restarted) conAppend("\n--- the file was restarted ---\n");
+        if (j.text) conAppend(j.text);
+        con.offset = j.offset;
+      }
+    }
+  } catch (e) { }
+  con.timer = setTimeout(pollConsole, 1000);
+}
+$("#consrc").addEventListener("change", e => switchConsole(e.target.value));
+$("#conrescan").onclick = () => con && loadConsoleSources();
+$("#conclear").onclick = () => { if (con) { con.text = ""; $("#conpre").textContent = ""; } };
+$("#conopen").onclick = () => {
+  const p = $("#conpath").value.trim();
+  if (!p.startsWith("/")) return snack("Give an absolute path on the device", true);
+  const sel = $("#consrc");
+  if (![...sel.options].some(o => o.value === p)) sel.insertAdjacentHTML("beforeend", `<option value="${esc(p)}">file: ${esc(p)}</option>`);
+  sel.value = p;
+  switchConsole(p);
+};
+$("#condlg").addEventListener("close", () => { if (con) clearTimeout(con.timer); });
+
+// ------------------------------------------------------------ installed ports (read-only, PortMaster's port.json files)
+let portsDev = null, portsData = null;
+function openPorts(d) {
+  portsDev = d.id; portsData = null;
+  $("#portstitle").textContent = `Installed ports on ${d.name}`;
+  $("#portsfilter").value = "";
+  $("#portsdlg").showModal();
+  loadPorts();
+}
+async function loadPorts() {
+  $("#portsbody").innerHTML = `<p class="sub">Reading PortMaster's port list on the device…</p>`;
+  const j = await api("GET", `/api/devices/${portsDev}/ports`);
+  if (j.ok === false) { $("#portsbody").innerHTML = `<div class="msgs"><div class="e">${esc(j.error || "failed")}</div></div>`; return; }
+  portsData = j; renderPorts();
+}
+function renderPorts() {
+  const j = portsData; if (!j) return;
+  const f = $("#portsfilter").value.trim().toLowerCase();
+  const list = j.ports.filter(p => !f || [p.title, p.name, p.dir, ...(p.porter || [])].join(" ").toLowerCase().includes(f))
+    .sort((a, b) => (a.title || a.name || "").localeCompare(b.title || b.name || ""));
+  const day = t => t ? new Date(t * 1000).toLocaleDateString() : "";
+  const rtm = p => { const r = p.runtime; return esc((Array.isArray(r) ? r : r ? [r] : []).join(", ")); };
+  const rows = list.map(p => `<tr>
+      <td><b>${esc(p.title || p.dir)}</b><span class="sub mono">${esc(p.name || "")}</span></td>
+      <td class="opt">${esc((p.porter || []).join(", "))}</td>
+      <td class="opt">${rtm(p)}</td>
+      <td>${day(p.when)}</td>
+      <td>${(p.logs || []).length ? (p.logs.length === 1
+        ? `<button type="button" class="small" data-log="${esc(p.logs[0][0])}" title="${esc(p.logs[0][0])} · ${logInfo(p.logs[0])}">Log</button>`
+        : `<select class="slim" data-logsel><option value="">Logs (${p.logs.length})…</option>${p.logs.map(l => `<option value="${esc(l[0])}">${esc(l[0].split("/").slice(-2).join("/"))} · ${logInfo(l)}</option>`).join("")}</select>`)
+        : `<span class="sub" style="display:inline">none</span>`}</td>
+      <td>${p.error ? `<span class="pill bad">${esc(p.error)}</span>` : p.missing && p.missing.length ? `<span class="pill bad" title="${esc(p.missing.join(", "))}">files missing</span>`
+        : `<span class="pill ok">${esc(p.source === "file" ? "manual install" : p.source || "ok")}</span>`}</td></tr>`).join("");
+  $("#portsbody").innerHTML = `
+    <p class="sub">PortMaster ${esc(j.pm_version || "?")} · ${j.ports.length} ports in <span class="mono">${esc(j.ports_dir)}</span>${j.scripts_dir !== j.ports_dir ? ` (launchers in <span class="mono">${esc(j.scripts_dir)}</span>)` : ""}</p>
+    <table class="ports"><thead><tr><th>Port</th><th class="opt">Porter</th><th class="opt">Runtime</th><th>Installed</th><th>Log</th><th>State</th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="6" class="sub">${f ? "No port matches the filter." : "No ports installed."}</td></tr>`}</tbody></table>
+    ${j.unknown.length ? `<p><b>Launchers PortMaster does not manage</b> <span class="sub">(copied by hand or from older installs)</span><br>${j.unknown.map(esc).join(", ")}</p>` : ""}
+    ${j.runtimes.length ? `<p><b>Runtimes</b><br>${j.runtimes.map(([n, s]) => `${esc(n.replace(/\.squashfs$/, ""))} <span class="sub" style="display:inline">(${Math.round(s / 1048576)} MB)</span>`).join(", ")}</p>` : ""}`;
+}
+// a port's log opens in the Console view (live, on top of this list)
+function logInfo(l) {
+  const kb = l[1] < 1024 ? l[1] + " B" : l[1] < 1048576 ? Math.round(l[1] / 1024) + " KB" : (l[1] / 1048576).toFixed(1) + " MB";
+  return `${kb}, ${new Date(l[2] * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+}
+function openPortLog(path) {
+  const d = S.devices.find(x => x.id === portsDev);
+  if (d && path) openConsole(d, path);
+}
+$("#portsbody").addEventListener("click", e => { const b = e.target.closest("button[data-log]"); if (b) openPortLog(b.dataset.log); });
+$("#portsbody").addEventListener("change", e => { const s = e.target.closest("select[data-logsel]"); if (s && s.value) { openPortLog(s.value); s.value = ""; } });
+$("#portsfilter").addEventListener("input", renderPorts);
+$("#portsrefresh").onclick = () => portsDev && loadPorts();
+
+// ------------------------------------------------------------ install a port (the device's own harbourmaster)
+let inst = null;   // {dev, res, upload, job}
+function fmtMB(b) { return (b / 1048576).toFixed(1) + " MB"; }
+function openInstall(d) {
+  inst = d ? { dev: d.id } : { dev: "_all", all: true };
+  $("#insttitle").textContent = d ? `Install a port on ${d.name}` : "Install a port on all online devices";
+  $("#instbody").innerHTML = "";
+  $("#instfile").value = "";
+  $("#instdrop").style.display = ""; $("#insturlrow").style.display = ""; $("#insturl").value = "";
+  $("#instgo").disabled = true;
+  $("#instgo").style.display = "";
+  $("#instcancel").textContent = "Cancel";
+  $("#instdlg").showModal();
+}
+// install from a URL: the device's harbourmaster downloads it (a .zip.md5 URL makes it check the download)
+async function useUrl() {
+  const url = $("#insturl").value.trim();
+  if (!/^https?:\/\/\S+$/i.test(url)) return snack("Give an http(s) URL of a port zip or its .zip.md5", true);
+  const name = decodeURIComponent(url.replace(/\/+$/, "").split("/").pop() || "download");
+  const res = { ok: true, url, name, size: 0, info: { kind: "url", title: name.replace(/\.md5$/i, ""), errors: [], warnings: [] } };
+  if (inst.all) {
+    const t = await api("GET", "/api/install-targets");
+    if (t.ok === false) return snack(t.error || "could not list the devices", true);
+    res.targets = t.targets; res.device = "all online devices";
+  } else {
+    const d = S.devices.find(x => x.id === inst.dev);
+    Object.assign(res, { device: d.name, lock: d.lock, fe_reload: !!d.fe_reload, fe_start: !!d.fe_start });
+  }
+  inst.res = res; inst.upload = null; inst.url = url;
+  renderPreview();
+}
+$("#insturlgo").onclick = useUrl;
+$("#insturl").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); useUrl(); } });
+function uploadZip(file) {
+  if (!inst || !file) return;
+  if (!/\.(zip|squashfs)$/i.test(file.name)) return snack("Pick a port .zip or a runtime .squashfs", true);
+  const body = $("#instbody");
+  body.innerHTML = `<div class="sub">Uploading ${esc(file.name)} (${fmtMB(file.size)}) to DeviceHub… <span id="uppct">0%</span></div><div class="bar"><i id="upbar" style="width:0%"></i></div>`;
+  $("#instgo").disabled = true;
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", `/api/devices/${encodeURIComponent(inst.dev)}/upload?name=${encodeURIComponent(file.name)}`);
+  xhr.setRequestHeader("X-DevHub-Token", TOKEN);
+  xhr.setRequestHeader("Content-Type", "application/zip");
+  xhr.upload.onprogress = e => {
+    if (!e.lengthComputable) return;
+    const p = Math.round(100 * e.loaded / e.total), a = $("#uppct"), b = $("#upbar");
+    if (a) a.textContent = p + "%";
+    if (b) b.style.width = p + "%";
+  };
+  xhr.onerror = () => { body.innerHTML = `<div class="msgs"><div class="e">Upload failed (is DeviceHub running?)</div></div>`; };
+  xhr.onload = () => {
+    let j; try { j = JSON.parse(xhr.responseText); } catch (e) { j = { ok: false, error: xhr.status + " " + xhr.statusText }; }
+    if (!j.ok) { body.innerHTML = `<div class="msgs"><div class="e">${esc(j.error || "upload failed")}</div></div>`; return; }
+    inst.res = j; inst.upload = j.upload; inst.url = null; renderPreview();
+  };
+  xhr.send(file);
+}
+// what the picked file is: a port zip, or a runtime .squashfs for PortMaster's libs folder
+function fileKv(j, i, kv) {
+  if (i.kind === "url") return kv("Port", esc(i.title)) + kv("URL", `<span class="mono" style="word-break:break-all">${esc(j.url)}</span>`) +
+    kv("How", "the device downloads it with its own harbourmaster (needs internet)" + (/\.md5$/i.test(j.url) ? " and checks it against the .md5" : ""));
+  if (i.kind === "squashfs") return kv("Runtime", esc(i.title || j.name)) + kv("File", esc(j.name) + " · " + fmtMB(j.size)) + kv("Goes to", "PortMaster/libs/");
+  return kv("Port", esc(i.title || "(no title in port.json)")) + kv("Zip", esc(j.name) + " · " + fmtMB(j.size)) +
+    kv("Launchers", esc((i.launchers || []).join(", ") || "none")) + kv("Folders", esc((i.dirs || []).join(", ") || "none")) +
+    kv("Contents", (i.files || 0) + " files, " + fmtMB(i.uncompressed || 0) + " unpacked");
+}
+function renderPreviewAll() {
+  const j = inst.res, i = j.info || {};
+  const kv = (k, v) => `<span class="k">${k}</span><span>${v}</span>`;
+  const rows = (j.targets || []).map(t => `<label class="trow ${t.ok ? "" : "off"}">
+      <input type="checkbox" data-t="${esc(t.id)}" ${t.ok && !t.held ? "checked" : ""} ${t.ok ? "" : "disabled"}>
+      <b>${esc(t.name)}</b> <span class="sub" style="display:inline">${esc(t.cfw)}</span>
+      ${!t.ok ? `<span class="sub" style="display:inline">· ${esc(t.why)}</span>` : ""}
+      ${t.held ? `<span class="w" style="display:inline">· held by ${esc(t.held.name)} ("${esc(t.held.purpose)}"): tick to install anyway</span>` : ""}
+    </label>`).join("");
+  $("#instbody").innerHTML = `
+    <div class="kv">${fileKv(j, i, kv)}</div>
+    <div class="msgs">${(i.errors || []).map(e => `<div class="e">${esc(e)}</div>`).join("")}${(i.warnings || []).map(w => `<div class="w">${esc(w)}</div>`).join("")}</div>
+    ${j.upload || j.url ? `<div class="opts"><b>Devices</b><div class="tlist">${rows}</div>
+      ${i.kind === "squashfs" ? `<div class="sub">Copied to each device's PortMaster libs folder at the same time (SHA-1 checked); no front-end refresh needed.</div>` : `
+      <div class="sub">Each device installs with its own PortMaster (harbourmaster), all at the same time; an installed copy is updated in place (saves stay).</div>
+      <b>Afterwards</b>
+      <label><input type="radio" name="refresh" value="reload" checked> Reload the game list (devices that can't: restart the front end)</label>
+      <label><input type="radio" name="refresh" value="restart"> Restart the front end</label>
+      <label><input type="radio" name="refresh" value="none"> Leave the front ends alone</label>`}
+    </div>` : ""}`;
+  const sync = () => { $("#instgo").disabled = !document.querySelector("#instbody input[data-t]:checked"); };
+  $("#instbody").querySelectorAll("input[data-t]").forEach(x => x.onchange = sync);
+  sync();
+  if (!(j.upload || j.url)) $("#instgo").disabled = true;
+}
+async function startInstallAll() {
+  const picked = [...document.querySelectorAll("#instbody input[data-t]:checked")].map(x => x.dataset.t);
+  if (!picked.length) return snack("Tick at least one device", true);
+  const held = inst.res.targets.filter(t => t.held && picked.includes(t.id));
+  if (held.length && !confirm(`Install anyway on ${held.map(t => `${t.name} (held by ${t.held.name})`).join(", ")}?`)) return;
+  const refresh = (document.querySelector("#instbody input[name=refresh]:checked") || {}).value || (inst.res.info.kind === "squashfs" ? "none" : "reload");
+  $("#instgo").disabled = true;
+  const j = await api("POST", "/api/install-all", Object.assign(inst.url ? { url: inst.url } : { upload: inst.upload }, { refresh, devices: picked, force: held.map(t => t.id) }));
+  if (j.ok === false && !(j.skipped || []).length) { $("#instgo").disabled = false; return snack(j.msg || j.error || "install refused", true); }
+  inst.upload = null; inst.url = null; inst.jobs = j.started || []; inst.skipped = j.skipped || [];
+  $("#instdrop").style.display = "none"; $("#insturlrow").style.display = "none";
+  $("#instcancel").textContent = "Close";
+  $("#instgo").style.display = "none";
+  pollAll();
+}
+async function pollAll() {
+  if (!inst || !inst.jobs) return;
+  const jobs = await Promise.all(inst.jobs.map(s => api("GET", `/api/jobs/${s.job.id}?lines=40`).then(r => r.job || s.job)));
+  const running = jobs.filter(x => x.state === "running").length, done = jobs.filter(x => x.state === "done").length;
+  const rows = inst.jobs.map((s, n) => {
+    const job = jobs[n], pct = jobPct(job);
+    const st = job.state === "done" ? `<span style="color:var(--ok)">✓ installed</span>${job.warning ? ` <span class="w" style="display:inline" title="${esc(job.warning)}">· requirements not matched</span>` : ""}`
+      : job.state === "failed" ? `<span style="color:var(--bad)">✗ ${esc(job.error)}</span>`
+      : `${esc(job.step)}${job.step === "sending" ? " · " + pct + "%" : ""}`;
+    return `<div class="trow"><b>${esc(s.name)}</b> <span>${st}</span></div>`;
+  }).join("") + inst.skipped.map(s => `<div class="trow off"><b>${esc(s.name)}</b> <span class="sub" style="display:inline">skipped: ${esc(s.why)}</span></div>`).join("");
+  $("#instbody").innerHTML = `<div class="kv"><span class="k">Port</span><span>${esc((jobs[0] && (jobs[0].title || jobs[0].name)) || "")}</span>
+      <span class="k">Progress</span><span>${done} of ${jobs.length} installed${running ? ` · ${running} running` : ""}${jobs.length - done - running ? ` · ${jobs.length - done - running} failed` : ""}</span></div>
+    ${running ? `<div class="bar"><i style="width:${Math.round(100 * (jobs.length - running) / Math.max(1, jobs.length))}%"></i></div>` : ""}
+    <div class="tlist">${rows}</div><div class="sub">Each device's card shows its install log too.</div>`;
+  if (running && $("#instdlg").open) setTimeout(pollAll, 1000);
+  else refresh();
+}
+function renderPreview() {
+  if (inst.all) return renderPreviewAll();
+  const j = inst.res, i = j.info || {}, lk = j.lock, held = lk && !lk.holder.ui;
+  const kv = (k, v) => `<span class="k">${k}</span><span>${v}</span>`;
+  const opts = [];
+  if (j.fe_reload) opts.push(["reload", "Reload the game list so the port shows up (no restart)"]);
+  if (j.fe_start) opts.push(["restart", "Restart the front end so the port shows up"]);
+  opts.push(["none", "Leave the front end alone"]);
+  $("#instbody").innerHTML = `
+    <div class="kv">${fileKv(j, i, kv)}${kv("Device", esc(j.device))}</div>
+    <div class="msgs">${(i.errors || []).map(e => `<div class="e">${esc(e)}</div>`).join("")}${(i.warnings || []).map(w => `<div class="w">${esc(w)}</div>`).join("")}
+      ${held ? `<div class="w">${esc(lk.holder.name)} holds this device ("${esc(lk.purpose)}"). Installing now may disturb its work.</div>` : ""}</div>
+    ${j.upload || j.url ? `<div class="opts">
+      ${i.kind === "squashfs" ? `<div class="sub">Copied to PortMaster's libs folder (SHA-1 checked); no front-end refresh needed.</div>` : `
+      <div class="sub">An installed copy is updated in place: saves and game files you added stay.</div>
+      <b>Afterwards</b>
+      ${opts.map(([v, l], n) => `<label><input type="radio" name="refresh" value="${v}" ${n === 0 ? "checked" : ""}> ${l}</label>`).join("")}`}
+      ${held ? `<label><input type="checkbox" id="instforce"> Install anyway, although ${esc(lk.holder.name)} holds it</label>` : ""}
+    </div>` : ""}`;
+  $("#instgo").disabled = !(j.upload || j.url);
+}
+async function startInstall() {
+  if (!inst || !(inst.upload || inst.url)) return;
+  if (inst.all) return startInstallAll();
+  const force = $("#instforce");
+  if (force && !force.checked) return snack("Tick 'Install anyway' first, or cancel", true);
+  const refresh = (document.querySelector("#instbody input[name=refresh]:checked") || {}).value || "none";
+  $("#instgo").disabled = true;
+  const j = await api("POST", `/api/devices/${inst.dev}/install`, Object.assign(inst.url ? { url: inst.url } : { upload: inst.upload }, { refresh, force: !!(force && force.checked) }));
+  if (j.ok === false) { $("#instgo").disabled = false; return snack(j.msg || j.error || "install refused", true); }
+  inst.job = j.job.id;
+  inst.upload = null; inst.url = null;
+  $("#instdrop").style.display = "none"; $("#insturlrow").style.display = "none";
+  $("#instcancel").textContent = "Close";
+  $("#instgo").style.display = "none";
+  pollJob();
+}
+async function pollJob() {
+  if (!inst || !inst.job) return;
+  const r = await api("GET", `/api/jobs/${inst.job}?lines=300`);
+  const job = r.job;
+  if (!job) return;
+  const pct = jobPct(job), lines = (job.log || []).filter(l => !l.trimStart().startsWith("- "));
+  const far = job.step === "sending" ? pct : job.step.startsWith("installing") ? 70 : job.step.startsWith("locating") ? 5 : 90;
+  $("#instbody").innerHTML = `
+    <div class="kv"><span class="k">Port</span><span>${esc(job.title || job.name)}</span>
+      <span class="k">Step</span><span>${esc(job.step)}${job.step === "sending" ? " · " + pct + "% of " + fmtMB(job.total) : ""}</span></div>
+    ${job.state === "running" ? `<div class="bar"><i style="width:${far}%"></i></div>` : ""}
+    ${job.state === "done" ? `<div class="msgs"><div class="w" style="background:var(--ok-soft);color:var(--ok)">✓ ${esc(job.result)}</div>${job.warning ? `<div class="w">${esc(job.warning)}</div>` : ""}</div>` : ""}
+    ${job.state === "failed" ? `<div class="msgs"><div class="e">✗ ${esc(job.error)}</div></div>` : ""}
+    <pre class="log">${esc(lines.slice(-40).join("\n")) || "…"}</pre>`;
+  const pre = $("#instbody pre.log");
+  if (pre) pre.scrollTop = pre.scrollHeight;
+  if (job.state === "running" && $("#instdlg").open) setTimeout(pollJob, 700);
+  else refresh();
+}
+$("#instfile").addEventListener("change", e => uploadZip(e.target.files[0]));
+["dragenter", "dragover"].forEach(ev => $("#instdlg").addEventListener(ev, e => { e.preventDefault(); $("#instdrop").classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => $("#instdlg").addEventListener(ev, e => { e.preventDefault(); $("#instdrop").classList.remove("over"); }));
+$("#instdlg").addEventListener("drop", e => {
+  const f = e.dataTransfer && e.dataTransfer.files[0];
+  if (f && $("#instdrop").style.display !== "none") uploadZip(f);
+});
+$("#instform").addEventListener("submit", e => { e.preventDefault(); startInstall(); });
+
+// ------------------------------------------------------------ editor
+const TYPES = {
+  "Samsung Galaxy Book Go": ["Qualcomm Snapdragon 7c Gen 2 (sc7180)", "Adreno 618", 4096, "1920x1080"],
+  "Anbernic RG Cube XX": ["Allwinner H700", "Mali-G31 MP2", 1024, "720x720"],
+  "Anbernic RG35XX Plus": ["Allwinner H700", "Mali-G31 MP2", 1024, "640x480"],
+  "Anbernic RG35XX H": ["Allwinner H700", "Mali-G31 MP2", 1024, "640x480"],
+  "Anbernic RG35XX SP": ["Allwinner H700", "Mali-G31 MP2", 1024, "640x480"],
+  "Anbernic RG40XX H": ["Allwinner H700", "Mali-G31 MP2", 1024, "640x480"],
+  "Anbernic RG40XX V": ["Allwinner H700", "Mali-G31 MP2", 1024, "640x480"],
+  "Anbernic RG28XX": ["Allwinner H700", "Mali-G31 MP2", 1024, "640x480"],
+  "Anbernic RG34XX": ["Allwinner H700", "Mali-G31 MP2", 1024, "720x480"],
+  "Anbernic RG351P": ["Rockchip RK3326", "Mali-G31 MP2", 1024, "480x320"],
+  "Anbernic RG351M": ["Rockchip RK3326", "Mali-G31 MP2", 1024, "480x320"],
+  "Anbernic RG351V": ["Rockchip RK3326", "Mali-G31 MP2", 1024, "640x480"],
+  "Anbernic RG351MP": ["Rockchip RK3326", "Mali-G31 MP2", 1024, "640x480"],
+  "Anbernic RG353V": ["Rockchip RK3566", "Mali-G52 2EE", 2048, "640x480"],
+  "Anbernic RG353VS": ["Rockchip RK3566", "Mali-G52 2EE", 1024, "640x480"],
+  "Anbernic RG353P": ["Rockchip RK3566", "Mali-G52 2EE", 2048, "640x480"],
+  "Anbernic RG353PS": ["Rockchip RK3566", "Mali-G52 2EE", 1024, "640x480"],
+  "Anbernic RG353M": ["Rockchip RK3566", "Mali-G52 2EE", 2048, "640x480"],
+  "Anbernic RG503": ["Rockchip RK3566", "Mali-G52 2EE", 1024, "960x544"],
+  "Anbernic RG552": ["Rockchip RK3399", "Mali-T860 MP4", 4096, "1920x1152"],
+  "Powkiddy X55": ["Rockchip RK3566", "Mali-G52 2EE", 2048, "1280x720"],
+  "TrimUI Smart Pro": ["Allwinner A133P", "PowerVR GE8300", 1024, "1280x720"],
+  "TrimUI Brick": ["Allwinner A133P", "PowerVR GE8300", 1024, "1024x768"],
+  "Retroid Pocket 5": ["Qualcomm Snapdragon 865", "Adreno 650", 8192, "1920x1080"],
+};
+const CFWS = ["Knulli", "ROCKNIX", "muOS", "dArkOS", "ArkOS", "AmberELEC", "JELOS", "Batocera", "PortMaster mode", "Other"];
+// fields that belong to an SD-card profile (the rest belong to the device)
+const CARD_KEYS = ["cfw", "port", "user", "auth", "identity", "smb", "ports_dir", "pm_dir", "fe_proc", "fe_start", "fe_stop", "fe_reload", "fe_alt"];
+let edCards = [], edIdx = 0, edDev = null;
+const FIELDS = [
+  ["SD card", [
+    { k: "_card", label: "Card profile", special: "card", wide: true },
+  ]],
+  ["Device", [
+    { k: "name", label: "Name", ph: "RG Cube XX" },
+    { k: "id", label: "ID", ph: "rg35xx", help: "short; used in commands: devhub acquire rg35xx", createOnly: true },
+    { k: "type", label: "Device type", list: "types", help: "pick a model from the list: its hardware is filled in from Retro Catalog" },
+    { k: "rc_slug", type: "hidden" },
+    { k: "cfw", label: "CFW", select: CFWS.map(x => [x, x]), help: "fills in login, ports folder and front-end commands" },
+  ]],
+  ["Connection", [
+    { k: "host", label: "IP address", ph: "192.168.1.50" },
+    { k: "port", label: "SSH port", type: "number" },
+    { k: "user", label: "User" },
+    { k: "auth", label: "Login", select: [["password", "Password – DeviceHub opens the shared connection"], ["key", "SSH key (WSL ~/.ssh)"], ["manual", "Manual – I open the shared connection myself"]] },
+    { k: "_pw", label: "Password", special: "pw", show: v => v.auth === "password", wide: true },
+    { k: "identity", label: "Key file (path on the DeviceHub machine, optional)", ph: "/home/you/.ssh/id_ed25519", show: v => v.auth === "key" },
+    { k: "socket", label: "Shared socket", ph: "/tmp/<id>.sock", help: "sessions use ssh -S with this path" },
+    { k: "smb", label: "SMB share", ph: "\\\\192.168.1.50\\share" },
+    { k: "ports_dir", label: "Ports folder on the device", ph: "/userdata/roms/ports" },
+    { k: "autoconnect", label: "Keep the shared connection open", type: "checkbox" },
+  ]],
+  ["Hardware", [
+    { k: "soc", label: "SoC" }, { k: "gpu", label: "GPU" },
+    { k: "ram_mb", label: "RAM (MB)", type: "number" }, { k: "screen", label: "Screen", ph: "720x720" },
+  ]],
+  ["Front end", [
+    { k: "fe_proc", label: "Process name", ph: "emulationstation", help: "checked with pidof; release needs it running" },
+    { k: "poll", label: "Poll status (battery, RAM, front end) every minute", type: "checkbox" },
+    { k: "fe_start", label: "Start command", wide: true, mono: true },
+    { k: "fe_stop", label: "Stop command", wide: true, mono: true },
+    { k: "fe_reload", label: "Reload game list command (after installs)", wide: true, mono: true, help: "empty: offer a front-end restart instead" },
+    { k: "fe_alt", label: "Also counts as the front end running", ph: "lightdm", mono: true, help: "process names, space separated: e.g. a laptop's desktop; start/stop still use the commands above" },
+    { k: "pm_dir", label: "PortMaster folder", ph: "found automatically", wide: true, mono: true, help: "only if harbourmaster is somewhere unusual" },
+  ]],
+  ["Rules", [
+    { k: "guard", label: "Hook guard", select: [["enforce", "Enforce – block other sessions' commands"], ["warn", "Warn only"], ["off", "Off"]], help: "for raw commands that name this device's IP or socket" },
+    { k: "match", label: "Extra guard words", ph: "rg35xx, my-port-test", help: "comma separated; commands containing these mean this device" },
+    { k: "approval", label: "Before a session gets this device (when it is free)", wide: true, select: [["auto", "It asks me through a notification; yes automatically if I don't answer in time"], ["ask", "It asks me and waits for my answer"], ["off", "No asking: the lock is enough"]] },
+    { k: "enabled", label: "Enabled (watch and connect)", type: "checkbox" },
+    { k: "battery_shutdown", label: "Shut it down cleanly at the low-battery level (off: notify only)", type: "checkbox" },
+    { k: "lock_file", label: "Legacy lock file (kept in step)", ph: "/path/to/old-tool.lock", wide: true, mono: true },
+    { k: "notes", label: "Notes", type: "textarea", wide: true, ph: "e.g. never reboot over SSH; the user also tests on it" },
+  ]],
+];
+const DEFAULTS = { port: 22, user: "root", auth: "password", cfw: "Knulli", guard: "enforce", autoconnect: true, poll: true, enabled: true, approval: "auto" };
+
+function openEditor(d) {
+  editing = d ? d.id : null; edDev = d;
+  const v = Object.assign({}, DEFAULTS, d || {});
+  if (!d) applyPreset(v, v.cfw, null);
+  // card profiles: a device without any is edited as one implicit card
+  edCards = d && d.cards && d.cards.length ? d.cards.map(c => Object.assign({}, c))
+    : [Object.assign({ id: "", label: v.cfw || "Card", has_password: !!(d && d.has_password) }, Object.fromEntries(CARD_KEYS.map(k => [k, v[k]])))];
+  edIdx = Math.max(0, edCards.findIndex(c => d && c.id === d.card));
+  $("#edtitle").textContent = d ? `Edit ${d.name}` : "Add device";
+  $("#eddelete").style.display = d ? "" : "none";
+  renderEditor(v);
+  $("#ed").showModal();
+  if (S.settings.retrocatalog) rcLoad().then(rcFillList);
+}
+function renderEditor(v) {
+  const body = $("#edbody");
+  Object.assign(v, Object.fromEntries(CARD_KEYS.map(k => [k, edCards[edIdx][k]])));
+  body.innerHTML = `<datalist id="types">${Object.keys(TYPES).map(t => `<option value="${esc(t)}">`).join("")}</datalist>` +
+    FIELDS.map(([title, fs]) => `<fieldset><legend>${title}</legend>${fs.map(f => field(f, v, edDev)).join("")}</fieldset>`).join("");
+  body._prevCfw = v.cfw;
+  if (body._prevHost === undefined || !$("#ed").open) body._prevHost = v.host || "";
+  if (edCards[edIdx]._pw) $("#f__pw").value = edCards[edIdx]._pw;
+  syncShow();
+}
+// keep what the form shows for the selected card (fields, label, a typed password) in edCards
+function stashCard() {
+  const v = readForm(), c = edCards[edIdx];
+  for (const k of CARD_KEYS) if (k in v) c[k] = v[k];
+  const lab = $("#edcardlabel"); if (lab) c.label = lab.value.trim() || c.cfw || "Card";
+  const pw = $("#f__pw"); c._pw = pw ? pw.value : "";
+  return v;
+}
+function field(f, v, d) {
+  const id = "f_" + f.k, cls = "f" + (f.wide ? " wide" : "") + (f.type === "checkbox" ? " cb" : "");
+  const help = f.help ? `<small>${esc(f.help)}</small>` : "";
+  if (f.special === "card") {
+    const many = edCards.length > 1, active = d && d.card;
+    return `<div class="${cls}"><span>${many ? "Card profile being edited" : "This device has one SD card"}</span>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+        ${many ? `<select id="edcard">${edCards.map((c, i) => `<option value="${i}" ${i === edIdx ? "selected" : ""}>${esc(c.label)}${c.id && c.id === active ? " · in the device now" : ""}</option>`).join("")}</select>` : ""}
+        <input id="edcardlabel" type="text" value="${esc(edCards[edIdx].label || "")}" placeholder="card name, e.g. Knulli 64 GB" style="width:190px" title="name of this card profile">
+        <button type="button" class="small" id="edcardadd">Add card profile</button>
+        ${many ? `<button type="button" class="small danger" id="edcarddel">Remove this card profile</button>` : ""}
+      </div>
+      <small>Same device, IP and specs; each SD card has its own CFW, login, password and folders (the fields marked ▣ below). DeviceHub switches by itself when the device answers with a known card's SSH host key; pick a new card on the device card once so DeviceHub learns its key.</small></div>`;
+  }
+  if (f.special === "pw") {
+    const has = edCards[edIdx] && edCards[edIdx].has_password;
+    return `<label class="${cls}" data-show="${f.k}"><span>${(CARD_KEYS.includes(f.k) || f.k === "_pw") && edCards.length > 1 ? "▣ " : ""}${f.label}</span><div class="pw">
+      ${has ? `<span class="pill ok">saved · encrypted with Windows DPAPI</span>` : ""}
+      <input id="f__pw" type="password" autocomplete="new-password" placeholder="${has ? "type to replace" : "device login password"}" style="flex:1;min-width:180px">
+      ${has ? `<button type="button" class="small danger" id="pwclear">Remove</button>` : ""}
+    </div><small>Stored only by DeviceHub, never shown again or sent to sessions; it opens the shared connection.</small></label>`;
+  }
+  if (f.type === "hidden") return `<input type="hidden" id="${id}" value="${esc(v[f.k] || "")}"><div class="f wide" id="rcnote">${rcNote(v.rc_slug)}</div>`;
+  if (f.type === "checkbox") return `<label class="${cls}" data-show="${f.k}"><input id="${id}" type="checkbox" ${v[f.k] ? "checked" : ""}><span>${(CARD_KEYS.includes(f.k) || f.k === "_pw") && edCards.length > 1 ? "▣ " : ""}${f.label}</span></label>`;
+  let input;
+  if (f.select) input = `<select id="${id}">${f.select.map(([val, lab]) => `<option value="${esc(val)}" ${String(v[f.k]) === val ? "selected" : ""}>${esc(lab)}</option>`).join("")}</select>`;
+  else if (f.type === "textarea") input = `<textarea id="${id}" rows="2" placeholder="${esc(f.ph || "")}">${esc(v[f.k] || "")}</textarea>`;
+  else input = `<input id="${id}" ${f.type === "number" ? 'type="number" min="0"' : 'type="text"'} ${f.list ? `list="${f.list}"` : ""} value="${esc(v[f.k] ?? "")}"
+      placeholder="${esc(f.ph || "")}" ${f.createOnly && d ? "disabled" : ""} ${f.mono ? 'class="mono"' : ""} spellcheck="false">`;
+  return `<label class="${cls}" data-show="${f.k}"><span>${(CARD_KEYS.includes(f.k) || f.k === "_pw") && edCards.length > 1 ? "▣ " : ""}${f.label}</span>${input}${help}</label>`;
+}
+// Retro Catalog (retrocatalog.com): model list for "Device type", specs for the hardware fields
+let RC = null;   // {byName: {name: slug}, names: [...]}
+const RC_URL = "https://retrocatalog.com";
+function rcNote(slug) {
+  if (!(S && S.settings.retrocatalog)) return slug ? `<small><a href="${RC_URL}/retro-handhelds/${esc(slug)}" target="_blank" rel="noopener">Retro Catalog ↗</a></small>` : "";
+  return slug ? `<small>Hardware from <a href="${RC_URL}/retro-handhelds/${esc(slug)}" target="_blank" rel="noopener">Retro Catalog ↗</a>
+      <button type="button" class="small" id="rcrefresh" style="margin-left:6px">Refresh specs</button></small>`
+    : `<small>Model list and specs come from <a href="${RC_URL}" target="_blank" rel="noopener">Retro Catalog</a> (retrocatalog.com).</small>`;
+}
+async function rcLoad() {
+  if (RC) return RC;
+  const j = await api("GET", "/api/retrocatalog/index");
+  if (j.ok === false) { snack("Retro Catalog list not available: " + (j.error || ""), true); return null; }
+  RC = { byName: Object.fromEntries(j.items.map(([s, n]) => [n, s])), names: j.items.map(x => x[1]) };
+  return RC;
+}
+function rcFillList() {
+  const dl = $("#types"); if (!dl || !RC) return;
+  const have = new Set(Object.keys(TYPES));
+  dl.innerHTML = [...Object.keys(TYPES), ...RC.names.filter(n => !have.has(n))].map(t => `<option value="${esc(t)}">`).join("");
+}
+async function rcApply(slug, refreshIt) {
+  snack("Getting the specs from Retro Catalog…");
+  const j = await api("GET", `/api/retrocatalog/device?slug=${encodeURIComponent(slug)}${refreshIt ? "&refresh=1" : ""}`);
+  if (j.ok === false) return snack(j.error || "Retro Catalog lookup failed", true);
+  const s = j.spec;
+  [["soc", s.soc], ["gpu", s.gpu], ["ram_mb", s.ram_mb || ""], ["screen", s.screen]].forEach(([k, val]) => { const el = $("#f_" + k); if (el && val) el.value = val; });
+  $("#f_rc_slug").value = slug;
+  $("#rcnote").innerHTML = rcNote(slug);
+  snack(`${s.name}: ${[s.soc, s.gpu, s.ram, s.resolution].filter(Boolean).join(" · ")}`);
+}
+function readForm() {
+  const v = {};
+  for (const [, fs] of FIELDS) for (const f of fs) {
+    if (f.special) continue;
+    const el = $("#f_" + f.k); if (!el) continue;
+    v[f.k] = f.type === "checkbox" ? el.checked : f.type === "number" ? Number(el.value || 0) : el.value.trim();
+  }
+  return v;
+}
+function syncShow() {
+  const v = readForm();
+  for (const [, fs] of FIELDS) for (const f of fs) if (f.show) {
+    const el = document.querySelector(`#edbody [data-show="${f.k}"]`); if (el) el.style.display = f.show(v) ? "" : "none";
+  }
+}
+function applyPreset(v, cfw, prev) {
+  const P = (S && S.presets) || {}, p = P[cfw] || {}, old = (prev && P[prev]) || {};
+  for (const k of ["user", "auth", "ports_dir", "fe_proc", "fe_start", "fe_stop", "fe_reload", "fe_alt"]) {
+    if (!(k in p) && !(k in old)) continue;
+    if (!(k in p)) { if (v[k] === old[k]) v[k] = ""; continue; }   // a value only the old CFW had goes
+    if (!v[k] || v[k] === old[k] || (k === "user" && v[k] === "root") || (k === "auth" && prev !== null)) v[k] = p[k];
+  }
+  if (p.smb_share && v.host && (!v.smb || (old.smb_share && v.smb.endsWith("\\" + old.smb_share)))) v.smb = `\\\\${v.host}\\${p.smb_share}`;
+}
+$("#edbody").addEventListener("change", e => {
+  const id = e.target.id;
+  if (id === "edcard") {
+    const v = stashCard(); edIdx = +e.target.value; renderEditor(v); return;
+  }
+  if (id === "f_cfw") {
+    const v = readForm(), prev = $("#edbody")._prevCfw;
+    applyPreset(v, v.cfw, prev); $("#edbody")._prevCfw = v.cfw;
+    for (const k of ["user", "auth", "ports_dir", "fe_proc", "fe_start", "fe_stop", "fe_reload", "fe_alt", "smb"]) { const el = $("#f_" + k); if (el) el.value = v[k] ?? ""; }
+  }
+  if (id === "f_type" && RC && RC.byName[e.target.value.trim()]) {
+    const nm = $("#f_name"); if (nm && !nm.value) nm.value = e.target.value.trim().replace(/^(Anbernic|TRIMUI|TrimUI|PowKiddy|Powkiddy|Retroid|Miyoo|AYANEO|AYN) /, "");
+    rcApply(RC.byName[e.target.value.trim()]);
+    return;
+  }
+  if (id === "f_type") {
+    if ($("#f_rc_slug")) { $("#f_rc_slug").value = ""; $("#rcnote").innerHTML = rcNote(""); }
+    const t = TYPES[e.target.value];
+    if (t) [["soc", t[0]], ["gpu", t[1]], ["ram_mb", t[2]], ["screen", t[3]]].forEach(([k, val]) => { const el = $("#f_" + k); if (el && (!el.value || el.value === "0")) el.value = val; });
+    const nm = $("#f_name"); if (nm && !nm.value) nm.value = e.target.value.replace(/^(Anbernic|TrimUI|Powkiddy) /, "");
+  }
+  if (id === "f_host") {
+    const host = e.target.value.trim(), old = $("#edbody")._prevHost || "";
+    const smb = $("#f_smb"), p = ((S && S.presets) || {})[$("#f_cfw").value] || {};
+    // the IP flows to every setting that contains it: the SMB share here and in the other card profiles
+    const swap = v => old && v && v.includes(old) ? v.split(old).join(host) : v;
+    if (smb) smb.value = swap(smb.value);
+    edCards.forEach((c, i) => { if (i !== edIdx) c.smb = swap(c.smb); });
+    if (smb && !smb.value && p.smb_share) smb.value = `\\\\${host}\\${p.smb_share}`;
+    $("#edbody")._prevHost = host;
+  }
+  syncShow();
+});
+$("#edbody").addEventListener("click", async e => {
+  const c = edCards[edIdx];
+  if (e.target.id === "rcrefresh") return rcApply($("#f_rc_slug").value, true);
+  if (e.target.id === "pwclear" && editing && confirm(`Remove the saved password${edCards.length > 1 ? ` of the ${c.label} card` : ""}?`)) {
+    await act(api("DELETE", `/api/devices/${editing}/password`, c.id ? { card: c.id } : {}), "Password removed");
+    $("#ed").close();
+  }
+  if (e.target.id === "edcardadd") {
+    const v = stashCard();
+    const cfw = c.cfw === "Knulli" ? "dArkOS" : "Knulli";
+    const n = Object.assign({ id: "", has_password: false }, Object.fromEntries(CARD_KEYS.map(k => [k, ""])),
+      { cfw, port: c.port || 22, host: v.host });
+    applyPreset(n, cfw, null);
+    delete n.host; n.label = cfw + " card";
+    edCards.push(n); edIdx = edCards.length - 1;
+    renderEditor(v);
+    snack("New card profile: pick its CFW and enter its login");
+  }
+  if (e.target.id === "edcarddel" && edCards.length > 1) {
+    if (!confirm(`Remove the ${c.label} card profile${c.has_password ? " and its saved password" : ""}?`)) return;
+    const v = readForm();
+    edCards.splice(edIdx, 1); edIdx = 0;
+    renderEditor(v);
+  }
+});
+$("#edform").addEventListener("submit", async e => {
+  e.preventDefault();
+  const v = stashCard();
+  const withCards = edCards.length > 1 || (edDev && edDev.cards && edDev.cards.length);
+  if (withCards) {
+    v.cards = edCards.map(c => Object.assign({ id: c.id, label: c.label }, Object.fromEntries(CARD_KEYS.map(k => [k, c[k]]))));
+    if (edDev && edDev.card) v.card = edDev.card;
+  }
+  const j = editing ? await api("PUT", `/api/devices/${editing}`, { device: v }) : await api("POST", "/api/devices", { device: v });
+  if (j.ok === false) return snack(j.error, true);
+  // passwords typed for any card profile (the saved device lists the cards in the same order)
+  for (const [i, c] of edCards.entries()) {
+    if (!c._pw) continue;
+    snack(`Encrypting the password${withCards ? " for the " + c.label + " card" : ""}…`);
+    const card = withCards && j.device.cards[i] ? { card: j.device.cards[i].id } : {};
+    const p = await api("POST", `/api/devices/${j.device.id}/password`, Object.assign({ password: c._pw }, card));
+    if (p.ok === false) return snack("Device saved, password NOT saved: " + p.error, true);
+  }
+  $("#ed").close(); snack(editing ? "Saved" : "Device added"); refresh();
+});
+$("#eddelete").onclick = async () => {
+  if (!editing || !confirm(`Delete ${editing} and its saved password?`)) return;
+  const j = await api("DELETE", `/api/devices/${editing}`);
+  if (j.ok === false) return snack(j.error, true);
+  $("#ed").close(); snack("Deleted"); refresh();
+};
+$("#addbtn").onclick = () => openEditor(null);
+$("#installbtn").onclick = () => openInstall(null);
+
+// ------------------------------------------------------------ settings
+const SETTINGS = [
+  ["user_name", "Your name on locks you take here", "text"],
+  ["default_ttl_min", "Default lease (minutes)", "number"],
+  ["max_ttl_min", "Longest lease (minutes)", "number"],
+  ["unseen_grace_min", "Answer time while the holder has not seen the check (minutes)", "number"],
+  ["check_grace_min", "Answer time once the holder saw the check (minutes)", "number"],
+  ["auto_release", "Stale locks", [["never", "Never release them for me"], ["when_clean", "Release when the device is clean and the holder idle"], ["always", "Release when the holder is idle, clean or not"]]],
+  ["stale_release_min", "…after being stale for (minutes)", "number"],
+  ["idle_release_min", "…with the holder idle for (minutes)", "number"],
+  ["approval_timeout_min", "Sessions' device requests count as yes after (minutes, devices set to auto-yes)", "number"],
+  ["approval_chain_min", "Request chains: a request within this long after an approval or an approved session's end is approved at once (minutes, 0 = off)", "number"],
+  ["watch_extend_min", "A watched job keeps the lease this far ahead (minutes)", "number"],
+  ["status_interval_s", "Status poll interval (seconds)", "number"],
+  ["battery_alert_pct", "Off the charger: notify me at this battery level (%, 0 = off)", "number"],
+  ["battery_shutdown_pct", "Off the charger: shut the device down cleanly at this battery level (%, 0 = off)", "number"],
+  ["toasts", "Windows notifications (WSL only) when no DeviceHub page with notifications on is open (otherwise the page notifies)", "checkbox"],
+  ["notify_cmd", "Notification command (optional, any platform; gets DEVHUB_TITLE, DEVHUB_TEXT, DEVHUB_URL, DEVHUB_KIND), e.g. notify-send \"$DEVHUB_TITLE\" \"$DEVHUB_TEXT\"", "text"],
+  ["retrocatalog", "Device types from Retro Catalog (retrocatalog.com): the editor reads its model list and a model's spec page when you pick it", "checkbox"],
+];
+// Away mode: sessions' requests for a free device are approved at once (no notification, no waiting)
+$("#awaybtn").onclick = async () => {
+  const on = !(S.settings && S.settings.away_mode);
+  const j = await api("PUT", "/api/settings", { settings: { away_mode: on } });
+  if (j.ok === false) return snack(j.error || "could not switch Away mode", true);
+  snack(on ? "Away mode on: sessions' device requests are approved at once (waiting ones too)"
+           : "Away mode off: sessions ask you again");
+  refresh();
+};
+$("#settingsbtn").onclick = () => {
+  const s = S.settings;
+  $("#setbody").innerHTML = `<fieldset>${SETTINGS.map(([k, label, t]) => {
+    if (t === "checkbox") return `<label class="f cb wide"><input id="s_${k}" type="checkbox" ${s[k] ? "checked" : ""}><span>${label}</span></label>`;
+    if (Array.isArray(t)) return `<label class="f wide"><span>${label}</span><select id="s_${k}">${t.map(([v, l]) => `<option value="${v}" ${s[k] === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>`;
+    return `<label class="f"><span>${label}</span><input id="s_${k}" type="${t}" value="${esc(s[k])}"></label>`;
+  }).join("")}</fieldset>
+  <p class="sub">Lock checks: when a lease runs out, the holder is asked (through its hooks or its next devhub command) whether it still needs the device. No answer in time → you get a notification; stale locks can be released for you by the rule above.</p>`;
+  $("#setdlg").showModal();
+};
+$("#setform").addEventListener("submit", async e => {
+  e.preventDefault();
+  const out = {};
+  for (const [k, , t] of SETTINGS) { const el = $("#s_" + k); out[k] = t === "checkbox" ? el.checked : t === "number" ? Number(el.value) : el.value; }
+  const j = await api("PUT", "/api/settings", { settings: out });
+  if (j.ok === false) return snack(j.error, true);
+  $("#setdlg").close(); snack("Settings saved"); refresh();
+});
+
+refresh(); refreshEvents();
+setInterval(refresh, 2000);
+setInterval(refreshEvents, 4000);
+</script>
+</body>
+</html>
