@@ -92,4 +92,14 @@ $DH acquire $DEV "server smoke" --for 5m | grep -q "is yours" || fail "acquire a
 [ "$($DH run $DEV -- 'echo hello-from-device')" = hello-from-device ] || fail "run"
 $DH release $DEV --dirty "no front end on the fake device" >/dev/null || fail "release"
 ok "agent acquire/run/release"
+# --- no blind polling: a device added by hand is left alone until you press Connect
+$C -X POST -d "{\"client\":\"ui\",\"device\":{\"id\":\"byhand\",\"name\":\"By hand\",\"host\":\"127.0.0.1\",\"port\":$DEVPORT,
+    \"user\":\"root\",\"auth\":\"password\",\"approval\":\"off\"}}" "http://127.0.0.1:$HUB/api/devices" | grep -q '"ok": true' || fail "add by hand"
+$C -X POST -d "{\"client\":\"ui\",\"password\":\"$(cat "$T/pw")\"}" "http://127.0.0.1:$HUB/api/devices/byhand/password" | grep -q '"ok": true' || fail "password"
+mstate() { $C "http://127.0.0.1:$HUB/api/state" | $PY -c "import json,sys; d=json.load(sys.stdin); v=[x for x in d['devices'] if x['id']=='$1'][0]; print(v['rt']['master'].get('state'), v['rt']['online'])"; }
+sleep 4
+[ "$(mstate byhand)" = "offline False" ] || fail "the hub reached out to a device that didn't announce: $(mstate byhand)"
+$C -X POST -d '{"client":"ui"}' "http://127.0.0.1:$HUB/api/devices/byhand/connect" | grep -q '"ok": true' || fail "connect"
+for i in $(seq 40); do [ "$(mstate byhand)" = "up True" ] && break; [ "$i" = 40 ] && fail "Connect didn't connect: $(mstate byhand)"; sleep 0.5; done
+ok "no polling: left alone until Connect, then connected"
 echo PASS

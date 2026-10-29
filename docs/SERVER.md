@@ -39,6 +39,14 @@ boot, IP change and resume, with nothing to run: Knulli/Batocera `custom.sh`, RO
 If the key can't be written (some CFWs reset `.ssh`), the card says so and you enter the device's password instead
 (Edit > Password), as in normal DeviceHub.
 
+## The hub never goes looking
+
+Local DeviceHub probes every device's SSH port every 10 s and connects whenever it answers. The server doesn't: it
+only reaches out to a device that announced itself in the last 2½ minutes (the beacon re-announces every minute), or
+for one minute after you press **Connect** on its card (how devices added by hand get connected). A connection that
+is already open stays while it lives. So a device is on the hub only while its beacon runs: from its boot hook, or
+because you ran the port since it booted. When it stops announcing, its card goes offline and the hub leaves it alone.
+
 ## The protocol
 
 - `GET /api/beacon/hello` → `nonce=<hex>` (one use, 2 minutes).

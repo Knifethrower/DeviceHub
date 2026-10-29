@@ -400,6 +400,50 @@ def r_state(body, q):
 D.ROUTES[:] = [(m, rx, r_state if fn is _r_state else fn, a, raw) for m, rx, fn, a, raw in D.ROUTES]
 
 
+# ---------------------------------------------------------------- no blind polling: devices are reached only when they ask
+# Local DeviceHub probes every device's SSH port every 10 s and connects whenever it answers. Here devices come and go,
+# so the hub only reaches out to a device that announced itself within ANNOUNCE_LEASE_S (the beacon re-announces every
+# minute), or for a minute after you press Connect (devices added by hand). An open connection is kept while it lives.
+
+ANNOUNCE_LEASE_S = 150
+CONNECT_WINDOW_S = 60
+_upkeep = D.upkeep
+
+
+def last_announce(dev):
+    return max([b.get("last") or 0 for b in H.beacons.values() if b.get("dev") == dev] or [0])
+
+
+def upkeep(dev):
+    d = H.devices.get(dev)
+    if not d:
+        return
+    r = D.rt(dev)
+    if (not d["enabled"] or now() - last_announce(dev) < ANNOUNCE_LEASE_S or now() < r.get("connect_until", 0)
+            or D.master_alive(d)[0]):
+        return _upkeep(dev)
+    if r["online"]:
+        event(dev, "net", "%s stopped announcing itself" % D.dname(d))
+        r["changed"] = now()
+    r["online"] = False
+    if r["master"]["state"] == "up":
+        event(dev, "ssh", "shared connection closed")
+    D.set_master(dev, "offline", "not announcing: run the DeviceHub Beacon port on it (or set up its boot hook), or press Connect")
+
+
+D.upkeep = upkeep
+_r_conn = next(fn for m, rx, fn, a, raw in D.ROUTES if fn.__name__ == "r_conn")
+
+
+def r_conn(body, q, dev, act):
+    if act == "connect":
+        D.rt(dev)["connect_until"] = now() + CONNECT_WINDOW_S
+    return _r_conn(body, q, dev, act)
+
+
+D.ROUTES[:] = [(m, rx, r_conn if fn is _r_conn else fn, a, raw) for m, rx, fn, a, raw in D.ROUTES]
+
+
 # ---------------------------------------------------------------- the beacon port, made for this hub
 
 PORT_JSON = {
