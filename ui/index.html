@@ -1088,6 +1088,8 @@ function fileKv(j, i, kv) {
   if (i.kind === "url") return kv("Port", esc(i.title)) + kv("URL", `<span class="mono" style="word-break:break-all">${esc(j.url)}</span>`) +
     kv("How", "the device downloads it with its own harbourmaster (needs internet)" + (/\.md5$/i.test(j.url) ? " and checks it against the .md5" : ""));
   if (i.kind === "squashfs") return kv("Runtime", esc(i.title || j.name)) + kv("File", esc(j.name) + " · " + fmtMB(j.size)) + kv("Goes to", "PortMaster/libs/");
+  if (i.kind === "portmaster") return kv("Update", esc(i.title)) + kv("Zip", esc(j.name) + " · " + fmtMB(j.size)) +
+    kv("Contents", (i.files || 0) + " files, " + fmtMB(i.uncompressed || 0) + " unpacked");
   return kv("Port", esc(i.title || "(no title in port.json)")) + kv("Zip", esc(j.name) + " · " + fmtMB(j.size)) +
     kv("Launchers", esc((i.launchers || []).join(", ") || "none")) + kv("Folders", esc((i.dirs || []).join(", ") || "none")) +
     kv("Contents", (i.files || 0) + " files, " + fmtMB(i.uncompressed || 0) + " unpacked");
@@ -1106,7 +1108,7 @@ function renderPreviewAll() {
     <div class="msgs">${(i.errors || []).map(e => `<div class="e">${esc(e)}</div>`).join("")}${(i.warnings || []).map(w => `<div class="w">${esc(w)}</div>`).join("")}</div>
     ${j.upload || j.url ? `<div class="opts"><b>Devices</b><div class="tlist">${rows}</div>
       ${i.kind === "squashfs" ? `<div class="sub">Copied to each device's PortMaster libs folder at the same time (SHA-1 checked); no front-end refresh needed.</div>` : `
-      <div class="sub">Each device installs with its own PortMaster (harbourmaster), all at the same time; an installed copy is updated in place (saves stay).</div>
+      <div class="sub">Each device installs with its own PortMaster (harbourmaster), all at the same time; an installed copy is updated in place (saves stay).${j.upload && S.settings.install_serve ? " Each device downloads the zip from DeviceHub itself (md5 checked)." : ""}</div>
       <b>Afterwards</b>
       <label><input type="radio" name="refresh" value="reload" checked> Reload the game list (devices that can't: restart the front end)</label>
       <label><input type="radio" name="refresh" value="restart"> Restart the front end</label>
@@ -1549,6 +1551,7 @@ const SETTINGS = [
   ["battery_shutdown_pct", "Off the charger: shut the device down cleanly at this battery level (%, 0 = off)", "number"],
   ["toasts", "Windows notifications (WSL only) when no DeviceHub page with notifications on is open (otherwise the page notifies)", "checkbox"],
   ["notify_cmd", "Notification command (optional, any platform; gets DEVHUB_TITLE, DEVHUB_TEXT, DEVHUB_URL, DEVHUB_KIND), e.g. notify-send \"$DEVHUB_TITLE\" \"$DEVHUB_TEXT\"", "text"],
+  ["install_serve", "Install on all: each device downloads the zip from DeviceHub over HTTP, md5 checked (off: DeviceHub copies it to every device over SSH; needs the devices to reach this machine, so off under WSL)", "checkbox"],
   ["retrocatalog", "Device types from Retro Catalog (retrocatalog.com): the editor reads its model list and a model's spec page when you pick it", "checkbox"],
 ];
 function settingsList() {

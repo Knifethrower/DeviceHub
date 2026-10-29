@@ -10,7 +10,7 @@ PY=${PYTHON:-python3}
 T=$(mktemp -d)
 HUB=18798; DEVPORT=12298
 export DEVHUB_PORT=$HUB DEVHUB_DATA=$T/data DEVHUB_NO_AUTOSTART=1 DEVHUB_NAME=server-smoke
-export DEVHUB_PASSWORD=smoke-pw DEVHUB_BIND=127.0.0.1 DEVHUB_PUBLIC_URL=http://127.0.0.1:$HUB DEVHUB_HUB_NAME=smokehub
+export DEVHUB_FILE_PORT=18795 DEVHUB_PASSWORD=smoke-pw DEVHUB_BIND=127.0.0.1 DEVHUB_PUBLIC_URL=http://127.0.0.1:$HUB DEVHUB_HUB_NAME=smokehub
 PIDS=
 cleanup() { for p in $PIDS; do kill "$p" 2>/dev/null || true; done
             for s in /tmp/*.sock; do ssh -S "$s" -O exit x >/dev/null 2>&1 || true; done 2>/dev/null; rm -rf "$T"; }
@@ -18,7 +18,21 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; tail -n 30 "$T/data/devhubd.log" >&2 2>/dev/null; exit 1; }
 ok() { echo "ok: $*"; }
 
-mkdir -p "$T/home/.ssh" "$T/ports"
+mkdir -p "$T/home/.ssh" "$T/ports" "$T/pm"
+# a fake PortMaster on the fake device: its harbourmaster downloads a URL and checks ?md5= like the real one
+cat > "$T/pm/harbourmaster" <<'EOF'
+#!/bin/sh
+z=$(eval echo \${$#})
+cd "$(dirname "$0")"
+case "$z" in
+  http*) want=${z##*md5=}; url=${z%%\?*}; name=${url##*/}
+         curl -fsS -o "dl-$name" "$url" || { echo "download failed"; exit 1; }
+         [ "$(md5sum < "dl-$name" | cut -c1-32)" = "$want" ] || { echo "md5 mismatch"; exit 1; }
+         echo "installed $name from $url" >> installed.txt ;;
+  *)     echo "installed $(basename "$z") from a copy" >> installed.txt ;;
+esac
+EOF
+chmod +x "$T/pm/harbourmaster"
 echo "device-password-unused" > "$T/pw"
 $PY "$HERE/tests/fake_device_sshd.py" $DEVPORT "$T/pw" "$T/hostkey" "$T/home/.ssh/authorized_keys" & PIDS="$PIDS $!"
 $PY "$HERE/devhubsrv.py" > "$T/hub.out" 2>&1 & PIDS="$PIDS $!"
@@ -53,7 +67,7 @@ DEVICE_NAME='Smoke RG35XX'
 DISPLAY_WIDTH='640'
 DISPLAY_HEIGHT='480'
 DEVICE_RAM='1024'
-PM_DIR='/storage/roms/ports/PortMaster'
+PM_DIR='$T/pm'
 PORTS_DIR='/storage/roms/ports'
 EOF
 # the beacon sees only busybox (no curl, no openssl): busybox wget and the pure-sh HMAC, like a bare handheld
@@ -82,7 +96,7 @@ for i in $(seq 40); do
     [ "$i" = 40 ] && fail "the hub did not connect with its key"
     sleep 0.5
 done
-$C "http://127.0.0.1:$HUB/api/state" | $PY -c "import json,sys; d=json.load(sys.stdin); v=[x for x in d['devices'] if x['id']=='$DEV'][0]; assert v['auth']=='key' and v['cfw']=='ROCKNIX' and v['ports_dir']=='/storage/roms/ports' and v['screen']=='640x480' and v['pm_dir']=='/storage/roms/ports/PortMaster', v" || fail "device profile"
+$C "http://127.0.0.1:$HUB/api/state" | $PY -c "import json,sys; d=json.load(sys.stdin); v=[x for x in d['devices'] if x['id']=='$DEV'][0]; assert v['auth']=='key' and v['cfw']=='ROCKNIX' and v['ports_dir']=='/storage/roms/ports' and v['screen']=='640x480' and v['pm_dir']=='$T/pm', v" || fail "device profile"
 ok "hub connected with its key ($DEV)"
 
 # --- an agent through the token
@@ -104,4 +118,28 @@ sleep 4
 $C -X POST -d '{"client":"ui"}' "http://127.0.0.1:$HUB/api/devices/byhand/connect" | grep -q '"ok": true' || fail "connect"
 for i in $(seq 40); do [ "$(mstate byhand)" = "up True" ] && break; [ "$i" = 40 ] && fail "Connect didn't connect: $(mstate byhand)"; sleep 0.5; done
 ok "no polling: left alone until Connect, then connected"
+# --- install on all: harbourmaster fetches the zip from DeviceHub over HTTP; PortMaster.zip is accepted
+$PY -c "import zipfile; z = zipfile.ZipFile('$T/game.zip', 'w'); z.writestr('Game.sh', '#!/bin/sh'); z.writestr('game/port.json', '{\"attr\": {\"title\": \"Game\"}}')"
+$PY -c "import zipfile; z = zipfile.ZipFile('$T/pmrel.zip', 'w'); z.writestr('PortMaster/harbourmaster', '#!/bin/sh'); z.writestr('PortMaster/version', '2026.10.01')"
+installall() {   # FILE NAME -> waits for the job, prints its state
+    up=$($C --data-binary "@$1" -H 'Content-Type: application/octet-stream' "http://127.0.0.1:$HUB/api/devices/_all/upload?name=$(printf %s "$2" | sed 's/ /%20/g')")
+    uid=$(echo "$up" | $PY -c 'import json,sys; print(json.load(sys.stdin)["upload"] or "")')
+    [ -n "$uid" ] || { echo "upload refused: $up"; return; }
+    job=$($C -X POST -d "{\"client\":\"ui\",\"upload\":\"$uid\",\"devices\":[\"$DEV\"],\"refresh\":\"none\"}" "http://127.0.0.1:$HUB/api/install-all" |
+          $PY -c 'import json,sys; r=json.load(sys.stdin); print(r["started"][0]["job"]["id"] if r.get("started") else r)')
+    for i in $(seq 60); do
+        st=$($C "http://127.0.0.1:$HUB/api/jobs/$job" | $PY -c 'import json,sys; j=json.load(sys.stdin)["job"]; print(j["state"], j.get("error") or "")')
+        case "$st" in running*) sleep 0.5 ;; *) echo "$st"; return ;; esac
+    done
+    echo "timeout"
+}
+r=$(installall "$T/game.zip" "game.zip"); [ "$r" = "done " ] || fail "install-all of a port: $r"
+grep -q "installed game.zip from http://127.0.0.1:18795/dl/" "$T/pm/installed.txt" || fail "the port wasn't fetched from DeviceHub: $(cat "$T/pm/installed.txt")"
+r=$(installall "$T/pmrel.zip" "PortMaster (2).zip"); [ "$r" = "done " ] || fail "install-all of PortMaster.zip: $r"
+grep -q "installed PortMaster.zip from http" "$T/pm/installed.txt" || fail "PortMaster.zip not installed under its own name"
+for i in $(seq 20); do   # it shuts down within a couple of seconds of the last install
+    [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18795/dl/00000000000000000000000000000000/x.zip")" = 000 ] && break
+    [ "$i" = 20 ] && fail "the file server is still up after the installs"; sleep 0.5
+done
+ok "install on all: fetched from DeviceHub (md5 checked); PortMaster.zip accepted"
 echo PASS

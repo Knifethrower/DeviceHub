@@ -72,7 +72,13 @@ agents see [AGENTS.md](AGENTS.md).
 - **From a URL**: the *or install from a URL* field (or `devhub install DEV https://…`) runs
   `harbourmaster --no-check install <url>` on the device (internet needed); a `.zip.md5` URL makes harbourmaster
   check the download.
-- **Install on all…** (top bar): one zip, uploaded once, installed on every device you tick, in parallel. The list
+- **PortMaster itself**: PortMaster's release zip (`PortMaster.zip`) installs like a port, on one device or on all:
+  harbourmaster updates PortMaster in place, as its own updater does.
+- **Install on all…** (top bar): one zip, uploaded once, installed on every device you tick, in parallel. Each
+  device's harbourmaster downloads it from DeviceHub over HTTP (`?md5=` checked) instead of DeviceHub copying it to
+  each over SSH: a hub on the LAN (server mode) serves it on its own port, a local one starts a file server on
+  `DEVHUB_FILE_PORT` (8766) while the installs run. Settings > *Install on all: each device downloads…* switches back
+  to copying (the default under WSL, whose network the devices can't reach). Runtimes (`.squashfs`) are always copied. The list
   says why a device can't take it; devices an agent holds are unticked. One notification sums up the run.
 - **Installed ports** (card button, or `devhub ports DEV`): read-only list from each port's `port.json`, plus
   launchers PortMaster does not manage and installed runtimes. The *Log* column opens a port's log files in the
