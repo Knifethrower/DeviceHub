@@ -402,6 +402,15 @@ D.ROUTES[:] = [(m, rx, r_state if fn is _r_state else fn, a, raw) for m, rx, fn,
 
 # ---------------------------------------------------------------- the beacon port, made for this hub
 
+PORT_JSON = {
+    "version": 2, "name": "devicehub.zip", "items": ["DeviceHub Beacon.sh", "devicehub/"], "items_opt": None,
+    "attr": {"title": "DeviceHub Beacon", "porter": ["DeviceHub"], "genres": ["other"], "image": {}, "rtr": True,
+             "runtime": None, "reqs": [], "arch": ["aarch64", "armhf", "x86_64"],
+             "desc": "Announces this handheld to your DeviceHub server, which then connects to it over SSH.",
+             "inst": "Switch SSH on, run it once, approve the device on DeviceHub's page."},
+}
+
+
 @route("GET", "/api/beacon/port.zip", raw=True)
 def r_beacon_port(h, q):
     if not D.REQ.ui:
@@ -423,9 +432,10 @@ def r_beacon_port(h, q):
         with open(os.path.join(BEACON_DIR, "beacon.sh"), "rb") as f:
             add("devicehub/beacon.sh", f.read(), 0o755)
         add("devicehub/beacon.conf", conf)
+        add("devicehub/port.json", json.dumps(PORT_JSON, indent=4) + "\n")
         with open(os.path.join(BEACON_DIR, "README.txt"), "rb") as f:
             add("devicehub/README.txt", f.read())
-    return ("application/zip", buf.getvalue(), {"Content-Disposition": 'attachment; filename="DeviceHub.Beacon.zip"'})
+    return ("application/zip", buf.getvalue(), {"Content-Disposition": 'attachment; filename="devicehub.zip"'})
 
 
 @route("POST", "/api/beacon/rotate")

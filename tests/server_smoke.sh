@@ -43,6 +43,8 @@ ok "login gate"
 [ "$(code "http://127.0.0.1:$HUB/api/beacon/port.zip?t=$TOK")" = 403 ] || fail "port zip without login"
 $C -o "$T/port.zip" "http://127.0.0.1:$HUB/api/beacon/port.zip?autostart=0"
 (cd "$T/ports" && unzip -q ../port.zip) || fail "port zip"
+(cd "$HERE" && $PY -c "import devhubd, sys; r = devhubd.inspect_zip(sys.argv[1]); print(r); assert not r['errors'] and not r['warnings'] and r['title'] == 'DeviceHub Beacon', r" "$T/port.zip") >/dev/null ||
+    fail "the port zip doesn't pass DeviceHub's port check"
 [ -x "$T/ports/devicehub/beacon.sh" ] && grep -q "HUB_URL='http://127.0.0.1:$HUB'" "$T/ports/devicehub/beacon.conf" || fail "port contents"
 cat > "$T/ports/devicehub/device.env" <<EOF
 CFW_NAME='ROCKNIX'
@@ -64,7 +66,7 @@ curl -s "http://127.0.0.1:$HUB/api/beacon/hello" | grep -q '^nonce=' || fail "he
 [ "$(code -X POST -H 'X-Beacon-Sig: 00' --data-binary 'id=deadbeefdeadbeef' "http://127.0.0.1:$HUB/api/beacon")" = 403 ] || fail "forged announce"
 ok "forged announce refused"
 
-BID=$(cat "$T/ports/devicehub/id")
+BID=$(cat "$T/home/.devicehub-beacon-id")
 $C -X POST -d '{"client":"ui"}' "http://127.0.0.1:$HUB/api/beacons/$BID/approve" | grep -q '"ok": true' || fail "approve"
 B once | grep -q "state=approved" || fail "announce after approval"
 grep -q "devicehub@smokehub" "$T/home/.ssh/authorized_keys" || fail "hub key not installed"

@@ -15,7 +15,7 @@ echo "DEVHUB_PUBLIC_URL=http://192.168.1.10:8765" >> .env   # this server's LAN 
 docker compose up -d --build
 ```
 
-Open the page, log in, and use **Beacon… > Download the beacon port**. Without Docker: `DEVHUB_PASSWORD=… python3 devhubsrv.py`.
+Open the page, log in, and press **Add device > Download devicehub.zip**. Without Docker: `DEVHUB_PASSWORD=… python3 devhubsrv.py`.
 
 | Variable | Meaning |
 |---|---|
@@ -27,7 +27,7 @@ Open the page, log in, and use **Beacon… > Download the beacon port**. Without
 ## Adding a handheld
 
 1. Switch SSH on in the CFW's settings.
-2. Copy the beacon port to the device's ports folder (or install the zip with PortMaster) and run **DeviceHub Beacon**.
+2. Put `devicehub.zip` in PortMaster's `autoinstall` folder on the device (or install it with PortMaster) and run **DeviceHub Beacon** from Ports.
 3. Approve it on the hub's page (or switch on *Settings > Beacons: new handhelds join without asking*).
 4. On its next announce (within 10 s) the beacon adds the hub's SSH key to the device's `authorized_keys`, and the
    device appears as a card, filled in from PortMaster's own device info (CFW, name, screen, RAM) and the CFW preset.

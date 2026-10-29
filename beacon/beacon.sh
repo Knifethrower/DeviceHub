@@ -117,9 +117,14 @@ host_keys() {   # this device's SSH host public keys, one per line
     fi
 }
 
-device_id() {   # random, made once and kept with the port: one SD card = one identity
-    [ -s "$HERE/id" ] || rand_hex 8 > "$HERE/id"
-    cat "$HERE/id"
+device_id() {   # random, made once per SD card; kept in the SSH user's home so reinstalling the port keeps it
+    f="$(ssh_home)/.devicehub-beacon-id"
+    if [ ! -s "$f" ]; then
+        if [ -s "$HERE/id" ]; then cp "$HERE/id" "$f" 2>/dev/null; else rand_hex 8 > "$f" 2>/dev/null; fi
+    fi
+    [ -s "$f" ] || f="$HERE/id"                     # home not writable: keep it with the port
+    [ -s "$f" ] || rand_hex 8 > "$f"
+    cat "$f"
 }
 
 clean() { printf '%s' "$1" | tr -d '\r\n' | cut -c1-200; }

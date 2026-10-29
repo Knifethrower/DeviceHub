@@ -196,7 +196,6 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
   <button id="notifbtn" class="small" title="Browser notifications from this page, used only when Windows notifications are off in Settings">Notify me</button>
   <button id="settingsbtn" class="small">Settings</button>
   <button id="installbtn" class="small" title="install one port zip on every online device at once">Install on all…</button>
-  <button id="beaconbtn" class="small" hidden title="handhelds that announce themselves to this server">Beacon…</button>
   <button id="addbtn" class="primary small">Add device</button>
   <button id="logoutbtn" class="small" hidden>Log out</button>
 </header>
@@ -289,7 +288,7 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
 </form></dialog>
 
 <dialog id="bcndlg"><form method="dialog">
-  <div class="dh"><h2>DeviceHub Beacon</h2><span class="spacer"></span><button type="button" class="small" data-close>Close</button></div>
+  <div class="dh"><h2>Add a device</h2><span class="spacer"></span><button type="button" class="small" data-close>Close</button></div>
   <div class="db" id="bcnbody"></div>
 </form></dialog>
 
@@ -502,7 +501,7 @@ function lockBox(d) {
 }
 
 function render() {
-  $("#beaconbtn").hidden = $("#logoutbtn").hidden = !S.server;
+  $("#logoutbtn").hidden = !S.server;
   if (S.server && $("#bcndlg").open) renderBeacons();
   const away = !!(S.settings && S.settings.away_mode), ab = $("#awaybtn");
   ab.textContent = away ? "Away mode: ON" : "Away mode";
@@ -1497,7 +1496,7 @@ $("#eddelete").onclick = async () => {
   if (j.ok === false) return snack(j.error, true);
   $("#ed").close(); snack("Deleted"); refresh();
 };
-$("#addbtn").onclick = () => openEditor(null);
+$("#addbtn").onclick = () => { if (S && S.server) { renderBeacons(); $("#bcndlg").showModal(); } else openEditor(null); };
 $("#installbtn").onclick = () => openInstall(null);
 
 // ------------------------------------------------------------ server mode: beacons, log out
@@ -1511,20 +1510,22 @@ function renderBeacons() {
       <td class="opt">${b.state !== "approved" ? `<button type="button" class="small primary" data-act="bcn-approve" data-bid="${esc(b.id)}">Approve</button>` : ""}
         ${b.state === "pending" ? `<button type="button" class="small" data-act="bcn-deny" data-bid="${esc(b.id)}">Deny</button>` : ""}
         <button type="button" class="small danger" data-act="bcn-forget" data-bid="${esc(b.id)}">Forget</button></td></tr>`).join("");
-  const html = `<p>Handhelds announce themselves to this hub with the <b>DeviceHub Beacon</b> port: copy it to the device's ports
-    folder (or install it with PortMaster), switch SSH on, and run it from Ports once. After you approve it here, the hub puts its
-    own SSH key on the device and connects to it: no password needed. With autostart, later boots and IP changes need nothing.</p>
-    <p><a href="/api/beacon/port.zip?autostart=1" download><button type="button" class="primary small">Download the beacon port</button></a>
-       <a href="/api/beacon/port.zip?autostart=0" download><button type="button" class="small">…without autostart</button></a>
-       <button type="button" class="small danger" id="bcnrotate" title="old beacon ports stop working">Change the beacon key</button></p>
+  const html = `<p><a href="/api/beacon/port.zip?autostart=1" download="devicehub.zip"><button type="button" class="primary">Download devicehub.zip</button></a></p>
+    <ol class="sub" style="padding-left:18px;margin:0 0 10px">
+      <li>Put <b>devicehub.zip</b> in the device's PortMaster <span class="mono">autoinstall</span> folder (or install it with PortMaster), and switch SSH on.</li>
+      <li>Run <b>DeviceHub Beacon</b> from Ports.</li>
+      <li>Approve it here. The device sends its name, CFW, address, screen and SSH keys itself; the hub then connects with its own key, and it shows up as a card.</li></ol>
+    <p class="sub">It also sets itself up to announce the device after every boot. <a href="/api/beacon/port.zip?autostart=0" download="devicehub.zip">Download without autostart</a> ·
+      <a href="#" id="bcnmanual">add a device by hand</a> · <a href="#" id="bcnrotate" title="old beacon ports stop working">change the beacon key</a></p>
     <p class="sub">The port carries this hub's beacon key: keep it to your own devices. Announcing to: ${esc(S.server.public_url || location.origin)}</p>
     ${rows ? `<div class="tablewrap"><table class="ports"><thead><tr><th>Device</th><th>CFW · address</th><th>State</th><th>Seen</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
            : `<div class="sub">No beacon has announced itself yet.</div>`}`;
   const el = $("#bcnbody"); if (el._html !== html) { el.innerHTML = html; el._html = html; }
 }
-$("#beaconbtn").onclick = () => { renderBeacons(); $("#bcndlg").showModal(); };
 $("#bcnbody").addEventListener("click", async e => {
+  if (e.target.id === "bcnmanual") { e.preventDefault(); $("#bcndlg").close(); return openEditor(null); }
   if (e.target.id !== "bcnrotate") return;
+  e.preventDefault();
   if (!confirm("Make a new beacon key? Every beacon port downloaded so far stops working until you download and copy the new one.")) return;
   await act(api("POST", "/api/beacon/rotate", {}), "New beacon key: download the port again");
 });
