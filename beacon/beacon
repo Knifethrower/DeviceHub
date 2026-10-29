@@ -1,14 +1,15 @@
 #!/bin/sh
 # DeviceHub beacon: tells the DeviceHub server "this handheld is up, at this IP", so the hub can SSH back to it.
-# Plain sh with busybox tools (curl or wget, sha256sum; openssl if there is one), no python.
+# Plain sh with busybox tools (curl or wget, sha256sum; openssl if there is one), no python. No .sh extension: a
+# port's folder must not hold .sh files (only its launcher, next to the folder, is one). Run it with: sh beacon ...
 #
-#   beacon.sh port            what the port launcher runs: announce once and say so on screen, start the
+#   beacon    port            what the port launcher runs: announce once and say so on screen, start the
 #                             background beacon, install autostart if beacon.conf asks for it
-#   beacon.sh daemon          the background beacon: announce at boot once the network is up, then every minute,
+#   beacon    daemon          the background beacon: announce at boot once the network is up, then every minute,
 #                             on an IP change and after a resume from sleep
-#   beacon.sh once            announce once, print the hub's answer
-#   beacon.sh autostart install|remove|status
-#   beacon.sh stop            stop the background beacon
+#   beacon    once            announce once, print the hub's answer
+#   beacon    autostart install|remove|status
+#   beacon    stop            stop the background beacon
 #
 # Protocol (see docs/SERVER.md): GET /api/beacon/hello gives a one-time nonce; POST /api/beacon sends key=value
 # lines with that nonce, signed HMAC-SHA256(hub key, body) in X-Beacon-Sig. The answer is key=value lines echoing
@@ -262,7 +263,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/bin/sh "$HERE/beacon.sh" daemon
+ExecStart=/bin/sh "$HERE/beacon" daemon
 Restart=always
 RestartSec=30
 $1
@@ -289,9 +290,9 @@ autostart_install() {
     case "$(cfw_kind)" in
         batocera)
             f=/userdata/system/custom.sh
-            grep -qs "$MARK" "$f" && { say "autostart: already in $f"; return 0; }
             [ -f "$f" ] || printf '#!/bin/sh\n' > "$f"
-            printf '%s\nif [ "$1" = start ]; then (sh "%s/beacon.sh" daemon >/dev/null 2>&1 &); fi\n%s end\n' \
+            sed -i "/^$MARK\$/,/^$MARK end\$/d" "$f"      # an older block (it may name an older path) is replaced
+            printf '%s\nif [ "$1" = start ]; then (sh "%s/beacon" daemon >/dev/null 2>&1 &); fi\n%s end\n' \
                 "$MARK" "$HERE" "$MARK" >> "$f" && chmod +x "$f" && say "autostart: added to $f" ;;
         libreelec)
             unit_text "" > /storage/.config/system.d/$UNIT && systemctl daemon-reload &&
@@ -299,7 +300,7 @@ autostart_install() {
         muos)
             d=$(muos_init_dir)
             [ -n "$d" ] || { say "autostart: no MUOS/init folder found"; return 1; }
-            printf '#!/bin/sh\n%s\n(sh "%s/beacon.sh" daemon >/dev/null 2>&1 &)\n' "$MARK" "$HERE" > "$d/devicehub-beacon.sh" &&
+            printf '#!/bin/sh\n%s\n(sh "%s/beacon" daemon >/dev/null 2>&1 &)\n' "$MARK" "$HERE" > "$d/devicehub-beacon.sh" &&
                 chmod +x "$d/devicehub-beacon.sh" &&
                 say "autostart: $d/devicehub-beacon.sh (switch on Configuration > Custom > User Init Scripts)" ;;
         systemd)
@@ -378,10 +379,10 @@ case "$1" in
             denied) say "Refused: ${HUB_NAME:-DeviceHub} turned this device down${ANSWER_MSG:+ - $ANSWER_MSG}" ;;
             "") say "Not announced yet; the background beacon keeps trying" ;;
         esac
-        [ "$AUTOSTART" = 1 ] && [ "$(autostart_state)" = 0 ] && autostart_install
+        [ "$AUTOSTART" = 1 ] && autostart_install     # (re)written each run, so it always names this copy
         if ! running; then
-            if command -v setsid >/dev/null 2>&1; then setsid sh "$HERE/beacon.sh" daemon >/dev/null 2>&1 < /dev/null &
-            else nohup sh "$HERE/beacon.sh" daemon >/dev/null 2>&1 < /dev/null & fi
+            if command -v setsid >/dev/null 2>&1; then setsid sh "$HERE/beacon" daemon >/dev/null 2>&1 < /dev/null &
+            else nohup sh "$HERE/beacon" daemon >/dev/null 2>&1 < /dev/null & fi
             say "background beacon started (log: $LOG)"
         fi ;;
     *) sed -n '2,/^$/s/^# \{0,1\}//p' "$0"; exit 2 ;;

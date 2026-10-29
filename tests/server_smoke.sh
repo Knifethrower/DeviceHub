@@ -45,7 +45,7 @@ $C -o "$T/port.zip" "http://127.0.0.1:$HUB/api/beacon/port.zip?autostart=0"
 (cd "$T/ports" && unzip -q ../port.zip) || fail "port zip"
 (cd "$HERE" && $PY -c "import devhubd, sys; r = devhubd.inspect_zip(sys.argv[1]); print(r); assert not r['errors'] and not r['warnings'] and r['title'] == 'DeviceHub Beacon', r" "$T/port.zip") >/dev/null ||
     fail "the port zip doesn't pass DeviceHub's port check"
-[ -x "$T/ports/devicehub/beacon.sh" ] && grep -q "HUB_URL='http://127.0.0.1:$HUB'" "$T/ports/devicehub/beacon.conf" || fail "port contents"
+[ -x "$T/ports/devicehub/beacon" ] && ! unzip -l "$T/port.zip" | grep -q "devicehub/.*\.sh" && grep -q "HUB_URL='http://127.0.0.1:$HUB'" "$T/ports/devicehub/beacon.conf" || fail "port contents"
 cat > "$T/ports/devicehub/device.env" <<EOF
 CFW_NAME='ROCKNIX'
 CFW_VERSION='20261001'
@@ -59,7 +59,7 @@ EOF
 # the beacon sees only busybox (no curl, no openssl): busybox wget and the pure-sh HMAC, like a bare handheld
 mkdir -p "$T/bin"; for a in $(busybox --list); do ln -s "$(command -v busybox)" "$T/bin/$a"; done
 BB=$(command -v busybox)
-B() { PATH="$T/bin" DH_SSH_HOME="$T/home" SSH_PORT=$DEVPORT DH_HOSTKEYS="$T/hostkey.pub" "$BB" sh "$T/ports/devicehub/beacon.sh" "$@"; }
+B() { PATH="$T/bin" DH_SSH_HOME="$T/home" SSH_PORT=$DEVPORT DH_HOSTKEYS="$T/hostkey.pub" "$BB" sh "$T/ports/devicehub/beacon" "$@"; }
 B once | grep -q "state=pending" || { B once || true; fail "first announce is not pending"; }
 ok "announce: pending"
 

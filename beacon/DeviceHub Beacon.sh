@@ -30,6 +30,6 @@ cd "$GAMEDIR" || exit 1
 } > "$GAMEDIR/device.env"
 
 printf "\033c" > "$CUR_TTY" 2>/dev/null
-CUR_TTY="$CUR_TTY" sh "$GAMEDIR/beacon.sh" port 2>&1 | tee "$GAMEDIR/last-run.txt"
+CUR_TTY="$CUR_TTY" sh "$GAMEDIR/beacon" port 2>&1 | tee "$GAMEDIR/last-run.txt"
 sleep 6
 printf "\033c" > "$CUR_TTY" 2>/dev/null

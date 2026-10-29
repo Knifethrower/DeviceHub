@@ -499,8 +499,8 @@ def r_beacon_port(h, q):
             z.writestr(zi, data)
         with open(os.path.join(BEACON_DIR, "DeviceHub Beacon.sh"), "rb") as f:
             add("DeviceHub Beacon.sh", f.read(), 0o755)
-        with open(os.path.join(BEACON_DIR, "beacon.sh"), "rb") as f:
-            add("devicehub/beacon.sh", f.read(), 0o755)
+        with open(os.path.join(BEACON_DIR, "beacon"), "rb") as f:
+            add("devicehub/beacon", f.read(), 0o755)     # no .sh in a port's folder: run as `sh beacon`
         add("devicehub/beacon.conf", conf)
         add("devicehub/port.json", json.dumps(PORT_JSON, indent=4) + "\n")
         with open(os.path.join(BEACON_DIR, "README.txt"), "rb") as f:

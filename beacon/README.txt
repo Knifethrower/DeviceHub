@@ -14,7 +14,7 @@ where; DeviceHub then connects to it over SSH by itself.
     AmberELEC
     muOS                MUOS/init/devicehub-beacon.sh (switch on Configuration > Custom > User Init Scripts)
     ArkOS / dArkOS      a systemd unit in /etc/systemd/system
-- Remove it: sh devicehub/beacon.sh autostart remove, then delete the port.
+- Remove it: sh devicehub/beacon autostart remove, then delete the port.
 - What it did last: devicehub/last-run.txt; the background beacon logs to /tmp/devicehub-beacon.log.
 
 beacon.conf holds the key that lets a device announce itself to your hub: don't share this port.
