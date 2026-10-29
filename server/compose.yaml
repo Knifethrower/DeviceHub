@@ -1,0 +1,20 @@
+# DeviceHub server: handhelds announce themselves to it (the beacon port) and it connects to them over SSH.
+# Put DEVHUB_PASSWORD (the web page's login) and DEVHUB_PUBLIC_URL in .env next to this file. Copy just this file:
+# it builds from the git repo, no checkout needed.
+services:
+  devicehub:
+    # built straight from the repo, so this file works on its own (e.g. in a stacks folder); pull/rebuild to update
+    build:
+      context: https://github.com/kloptops/DeviceHub.git#server-mode
+      dockerfile: server/Dockerfile
+    container_name: devicehub
+    restart: unless-stopped
+    # host networking: the hub sees each handheld's real source address and reaches the LAN directly
+    network_mode: host
+    environment:
+      DEVHUB_PASSWORD: ${DEVHUB_PASSWORD:?set DEVHUB_PASSWORD in .env}
+      DEVHUB_PUBLIC_URL: ${DEVHUB_PUBLIC_URL:-}      # e.g. http://192.168.68.133:8765 (what the beacon calls)
+      DEVHUB_HUB_NAME: ${DEVHUB_HUB_NAME:-DeviceHub}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data:/data

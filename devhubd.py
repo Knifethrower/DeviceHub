@@ -17,6 +17,8 @@ from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.abspath(os.environ.get("DEVHUB_DATA") or os.path.join(HERE, "data"))
 PORT = int(os.environ.get("DEVHUB_PORT") or 8765)
+FILE_PORT = int(os.environ.get("DEVHUB_FILE_PORT") or 8766)   # the temporary file server for installs (local mode)
+BIND = os.environ.get("DEVHUB_BIND") or "127.0.0.1"   # server mode (devhubsrv.py) listens on the LAN
 RUN = "/tmp/devhub-%d-%d" % (os.getuid(), PORT)
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
@@ -58,6 +60,9 @@ DEFAULT_SETTINGS = {
     "away_mode": False,            # the user's Away mode: sessions' requests for a free device are approved at once
     "notify_cmd": "",              # shell command for notifications (env DEVHUB_TITLE/TEXT/URL/KIND), any platform
     "retrocatalog": False,         # device type list + specs from retrocatalog.com (reads its public pages on demand)
+    # Install on all: each device's harbourmaster downloads the zip from DeviceHub over HTTP (with an md5 check) instead
+    # of DeviceHub copying it to every device over SSH. Off under WSL, whose network LAN devices can't reach.
+    "install_serve": PLATFORM != "wsl",
 }
 
 # Defaults filled in when a CFW is picked in the editor (every field stays editable).
@@ -90,7 +95,12 @@ CFW_PRESETS = {
     "ArkOS": {"user": "ark", "auth": "password", "ports_dir": "/roms/ports", "smb_share": "roms",
               "fe_proc": "emulationstation", "fe_start": "sudo systemctl start emulationstation",
               "fe_stop": "sudo systemctl stop emulationstation"},
-    "muOS": {"user": "root", "auth": "key", "ports_dir": "", "smb_share": "", "fe_proc": "", "fe_start": "", "fe_stop": ""},
+    # FRONTEND is muOS's own front-end control; /etc/profile puts it on the PATH of a plain SSH command. The start runs
+    # in the background so the SSH command returns. frontend.sh is the front end's loop (the mux* menus come and go
+    # under it); it is gone after FRONTEND stop.
+    "muOS": {"user": "root", "auth": "key", "ports_dir": "", "smb_share": "", "fe_proc": "frontend.sh",
+             "fe_start": "(. /etc/profile >/dev/null 2>&1; FRONTEND start) >/dev/null 2>&1 </dev/null &",
+             "fe_stop": ". /etc/profile >/dev/null 2>&1; FRONTEND stop"},
     "Other": {},
 }
 
@@ -1180,7 +1190,16 @@ def touch_session(sid, name=None, transcript=None):
         return s
 
 
+# Server mode's request gate (devhubsrv.py): GATE(handler, method, path, query, auth) checks login and token in place
+# of the loopback Host check, and returns a response tuple to send instead (a redirect to the login page) or None.
+# REQ.ui says whether this request may speak as the user (client "ui"): always locally, only when logged in there.
+GATE = None
+REQ = threading.local()
+
+
 def caller(body):
+    if body.get("client") == "ui" and not getattr(REQ, "ui", True):
+        raise ApiError(403, "log in to DeviceHub to act as the user")
     if body.get("client") == "ui":
         return {"session": None, "name": H.settings.get("user_name") or "user", "ui": True}
     sid = str(body.get("session") or "").strip() or None
@@ -2365,6 +2384,16 @@ def inspect_zip(path):
         rtm = attr.get("runtime") or []
         runtime = rtm if isinstance(rtm, list) else [rtm]
         break
+    if not launchers and ("PortMaster/harbourmaster" in names or "PortMaster/PortMaster.sh" in names):
+        # PortMaster itself (its release zip): harbourmaster updates PortMaster in place, as its own updater does
+        try:
+            ver = z.read("PortMaster/version").decode("utf-8", "replace").strip()[:40]
+        except KeyError:
+            ver = ""
+        return {"kind": "portmaster", "launchers": [], "dirs": sorted(dirs), "other": sorted(root_files),
+                "files": sum(1 for i in infos if not i.is_dir()), "uncompressed": sum(i.file_size for i in infos),
+                "title": "PortMaster %s" % ver if ver else "PortMaster", "runtime": [], "errors": errors,
+                "warnings": ["this is PortMaster itself: harbourmaster updates PortMaster on the device in place"]}
     if not launchers:
         inner = [n for n in names if n.count("/") == 1 and n.lower().endswith(".sh")]
         errors.append("no launcher (.sh) at the top of the zip, so it is not a PortMaster port zip" +
@@ -2511,6 +2540,14 @@ def install_job(job, d, up, refresh, took_lock, who):
             target_z = up["url"]
             job_log(job, "harbourmaster downloads %s on the device" % up["url"])
             job["step"] = "installing (harbourmaster downloads it)"
+        elif up.get("serve"):      # install on all: harbourmaster fetches it from DeviceHub's file server (md5 checked)
+            need = (up["size"] + up["info"].get("uncompressed", 0)) // 1024
+            free = int(info.get("FREE") or 0)
+            if free and free < need:
+                raise JobError("not enough space: about %d MB needed, %d MB free" % (need // 1024, free // 1024))
+            target_z = serve_url(up["serve"], d)
+            job_log(job, "harbourmaster downloads %s from DeviceHub (%s)" % (up["name"], target_z.split("/dl/")[0]))
+            job["step"] = "installing (harbourmaster downloads it from DeviceHub)"
         else:
             need = (up["size"] + up["info"].get("uncompressed", 0)) // 1024
             free = int(info.get("FREE") or 0)
@@ -2798,6 +2835,7 @@ def sessions_public():
 # ---------------------------------------------------------------- HTTP
 
 ROUTES = []
+STREAMED = object()   # a raw route that wrote its own reply (a file download) returns this
 
 
 def route(method, pattern, auth=True, raw=False):
@@ -2857,11 +2895,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             host = host[1:host.index("]")] if host.startswith("[") and "]" in host else host.split(":")[0]
             if hit and hit[2]:
                 self.close_connection = True   # body may be left unread if we refuse below
-            if host not in ("127.0.0.1", "localhost", "::1"):
+            REQ.ui = True
+            if GATE:
+                res = GATE(self, method, u.path, q, bool(hit and hit[1]))
+                if res:
+                    self.reply(*res)
+                    return
+            elif host not in ("127.0.0.1", "localhost", "::1"):
                 raise ApiError(403, "bad Host header")
             if hit:
                 fn, auth, raw_body, mt = hit
-                if auth:
+                if auth and not GATE:
                     tok = self.headers.get("X-DevHub-Token") or (q.get("t") or [""])[0]
                     if not secrets.compare_digest(tok.encode(), TOKEN.encode()):
                         raise ApiError(401, "missing or wrong token")
@@ -2875,6 +2919,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if not isinstance(body, dict):
                         raise ApiError(400, "body must be a JSON object")
                     res = fn(body, q, *mt.groups())
+                if res is STREAMED:
+                    return
                 if isinstance(res, tuple):
                     self.reply(200, res[0], res[1], res[2] if len(res) > 2 else None)
                 else:
@@ -3407,6 +3453,118 @@ def r_shot_delete(body, q, dev, name):
     return {"ok": True, "msg": "deleted %d screenshot%s" % (gone, "" if gone == 1 else "s")}
 
 
+# ---------------------------------------------------------------- serving a file to the devices (install on all)
+# One upload, fetched by every device's harbourmaster over HTTP (http://<this machine>/dl/<token>/<name>?md5=...),
+# instead of a copy pushed to each over SSH. The token is random and the file is served only while its installs run.
+# A hub listening on the LAN (server mode) serves it on its own port; a local DeviceHub (loopback only) starts a
+# small file server on FILE_PORT for the duration.
+H.serves = {}       # token -> {"path", "name", "md5", "size"}
+H.file_srv = None
+
+
+def serve_add(path, name):
+    md5 = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            md5.update(chunk)
+    tok = secrets.token_hex(16)
+    with H.lock:
+        H.serves[tok] = {"path": path, "name": name, "md5": md5.hexdigest(), "size": os.path.getsize(path)}
+    if BIND in ("127.0.0.1", "localhost", "::1"):
+        file_server(True)
+    return tok
+
+
+def serve_drop(tok):
+    with H.lock:
+        e = H.serves.pop(tok, None)
+        idle = not H.serves
+    if e:
+        try:
+            os.unlink(e["path"])
+        except OSError:
+            pass
+    if idle:
+        file_server(False)
+
+
+def local_ip_for(host):
+    """This machine's address on the way to the device (what the device should download from)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect((host, 9))
+            return s.getsockname()[0]
+    except OSError:
+        raise JobError("can't tell which of this machine's addresses %s would reach" % host)
+
+
+def serve_url(tok, d):
+    e = H.serves.get(tok)
+    if not e:
+        raise JobError("the file to install is gone (the install-all run ended)")
+    port = FILE_PORT if H.file_srv else PORT
+    return "http://%s:%d/dl/%s/%s?md5=%s" % (local_ip_for(d["host"]), port, tok, urllib.parse.quote(e["name"]), e["md5"])
+
+
+def send_served(h, tok, name):
+    e = H.serves.get(tok)
+    if not e or urllib.parse.unquote(name) != e["name"]:
+        h.reply(404, "text/plain", b"not found")
+        return STREAMED
+    h.send_response(200)
+    h.send_header("Content-Type", "application/zip")
+    h.send_header("Content-Length", str(e["size"]))
+    h.send_header("Cache-Control", "no-store")
+    h.end_headers()
+    with open(e["path"], "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.wfile.write(chunk)
+    log("served", e["name"], "to", h.client_address[0])
+    return STREAMED
+
+
+SERVED_RE = re.compile(r"^/dl/([0-9a-f]{32})/([^/?]+)$")
+
+
+@route("GET", r"/dl/([0-9a-f]{32})/([^/?]+)", auth=False, raw=True)
+def r_served(h, q, tok, name):
+    return send_served(h, tok, name)
+
+
+class FileHandler(http.server.BaseHTTPRequestHandler):
+    """The temporary file server of a local (loopback-only) DeviceHub: only /dl/<token>/<name>, nothing else."""
+    server_version = "DeviceHub/" + VERSION
+    reply = lambda self, code, ctype, data, extra=None: Handler.reply(self, code, ctype, data, extra)
+
+    def log_message(self, fmt, *a):
+        pass
+
+    def do_GET(self):
+        m = SERVED_RE.match(urllib.parse.urlsplit(self.path).path)
+        try:
+            if m:
+                send_served(self, *m.groups())
+            else:
+                self.reply(404, "text/plain", b"not found")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+
+def file_server(on):
+    with H.lock:
+        if on and not H.file_srv:
+            try:
+                H.file_srv = Server(("0.0.0.0", FILE_PORT), FileHandler)
+            except OSError as e:
+                log("file server: cannot listen on port %d: %s" % (FILE_PORT, e))
+                return
+            threading.Thread(target=H.file_srv.serve_forever, daemon=True).start()
+            log("file server for installs on port %d" % FILE_PORT)
+        elif not on and H.file_srv:
+            srv, H.file_srv = H.file_srv, None
+            threading.Thread(target=lambda: (srv.shutdown(), srv.server_close()), daemon=True).start()
+
+
 UPLOAD_KEEP_S = 30 * 60      # an uploaded zip nobody installs is deleted after this
 
 
@@ -3483,6 +3641,8 @@ def r_upload(h, q, dev):
         raise ApiError(400, "upload cut short (%d of %d bytes)" % (got, n))
     h.close_connection = False
     info = inspect_squashfs(path, name) if name.lower().endswith(".squashfs") else inspect_zip(path)
+    if info.get("kind") == "portmaster":
+        name = "PortMaster.zip"      # harbourmaster recognises PortMaster's own zip by this name only
     H.uploads[uid] = {"id": uid, "path": path, "name": name, "dev": dev, "size": n, "sha1": sha.hexdigest(),
                       "at": now(), "info": info}
     if info["errors"]:
@@ -3497,11 +3657,14 @@ def r_upload(h, q, dev):
             "fe_start": bool(d.get("fe_start"))}
 
 
-def install_all_summary(jids, up):
-    """One notification when every install of an 'install on all devices' run has finished."""
+def install_all_summary(jids, up, serve=None):
+    """One notification when every install of an 'install on all devices' run has finished (and the served file
+    goes away then)."""
     jobs = [H.jobs[j] for j in jids if j in H.jobs]
     while any(j["state"] == "running" for j in jobs):
         time.sleep(2)
+    if serve:
+        serve_drop(serve)
     title = up["info"].get("title") or up["name"]
     ok = [H.devices[j["dev"]]["name"] for j in jobs if j["state"] == "done" and j["dev"] in H.devices]
     bad = ["%s (%s)" % (H.devices[j["dev"]]["name"] if j["dev"] in H.devices else j["dev"], j["error"])
@@ -3544,6 +3707,10 @@ def r_install_all(body, q):
     refresh = body.get("refresh") or "reload"
     targets = {t["id"]: t for t in install_targets()}
     started, skipped = [], []
+    serve = None
+    if not up.get("url") and up["info"].get("kind") != "squashfs" and H.settings.get("install_serve"):
+        serve = serve_add(up["path"], up["name"])      # the served file now owns the upload
+        H.uploads.pop(up["id"], None)
     for dev in want:
         t = targets.get(dev)
         if not t:
@@ -3558,6 +3725,8 @@ def r_install_all(body, q):
         d = H.devices[dev]
         if up.get("url"):
             uid, link, mine = None, None, dict(up, dev=dev)
+        elif serve:
+            uid, link, mine = None, None, dict(up, id=None, path=None, serve=serve, dev=dev)
         else:
             uid = secrets.token_hex(8)
             link = os.path.join(UPLOADS, uid + ".zip")
@@ -3582,14 +3751,16 @@ def r_install_all(body, q):
                 except OSError:
                     pass
             skipped.append({"dev": dev, "name": t["name"], "why": res.get("msg") or "refused"})
-    if not up.get("url"):
+    if not up.get("url") and not serve:
         H.uploads.pop(up["id"], None)        # every job has its own link now
         try:
             os.unlink(up["path"])
         except OSError:
             pass
     if started:
-        threading.Thread(target=install_all_summary, args=([s["job"]["id"] for s in started], up), daemon=True).start()
+        threading.Thread(target=install_all_summary, args=([s["job"]["id"] for s in started], up, serve), daemon=True).start()
+    elif serve:
+        serve_drop(serve)
     event(None, "install", "%s is installing %s on %d device%s%s" % (
         c["name"], up["name"], len(started), "" if len(started) == 1 else "s",
         " (skipped: %s)" % ", ".join("%s - %s" % (s["name"], s["why"]) for s in skipped) if skipped else ""), c["name"])
@@ -4028,14 +4199,14 @@ def main():
     import_lock_files()
     save_state()
     try:
-        HTTPD = Server(("127.0.0.1", PORT), Handler)
+        HTTPD = Server((BIND, PORT), Handler)
     except OSError as e:
-        print("DeviceHub: cannot listen on 127.0.0.1:%d (%s) - already running?" % (PORT, e), file=sys.stderr)
+        print("DeviceHub: cannot listen on %s:%d (%s) - already running?" % (BIND, PORT, e), file=sys.stderr)
         sys.exit(1)
     signal.signal(signal.SIGTERM, lambda *a: threading.Thread(target=HTTPD.shutdown, daemon=True).start())
     threading.Thread(target=loop, daemon=True).start()
-    log("DeviceHub %s (%s) listening on http://127.0.0.1:%d, data in %s, %d devices" % (
-        VERSION, "WSL" if PLATFORM == "wsl" else "Linux", PORT, DATA, len(H.devices)))
+    log("DeviceHub %s (%s) listening on http://%s:%d, data in %s, %d devices" % (
+        VERSION, "WSL" if PLATFORM == "wsl" else "Linux", BIND, PORT, DATA, len(H.devices)))
     event(None, "hub", "DeviceHub started")
     try:
         HTTPD.serve_forever()

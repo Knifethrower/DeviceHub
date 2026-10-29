@@ -124,6 +124,7 @@ aside { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .ev.stale .k, .ev.guard .k { background: var(--bad-soft); color: var(--bad); }
 select.slim { padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
 label.chk { font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+.tablewrap { overflow-x: auto; }
 .empty { color: var(--muted); padding: 30px; text-align: center; background: var(--panel); border: 1px dashed var(--line); border-radius: 12px; }
 dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--text); padding: 0; overflow: hidden; width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 40px); }
 dialog::backdrop { background: rgba(0,0,0,.35); }
@@ -196,6 +197,7 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
   <button id="settingsbtn" class="small">Settings</button>
   <button id="installbtn" class="small" title="install one port zip on every online device at once">Install on all…</button>
   <button id="addbtn" class="primary small">Add device</button>
+  <button id="logoutbtn" class="small" hidden>Log out</button>
 </header>
 <main>
   <section id="alerts"></section>
@@ -283,6 +285,11 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
   </div>
   <div class="df"><span class="spacer"></span><button type="button" data-close id="instcancel">Cancel</button>
     <button type="submit" class="primary" id="instgo" disabled>Install</button></div>
+</form></dialog>
+
+<dialog id="bcndlg"><form method="dialog">
+  <div class="dh"><h2>Add a device</h2><span class="spacer"></span><button type="button" class="small" data-close>Close</button></div>
+  <div class="db" id="bcnbody"></div>
 </form></dialog>
 
 <div id="snack"></div>
@@ -494,6 +501,8 @@ function lockBox(d) {
 }
 
 function render() {
+  $("#logoutbtn").hidden = !S.server;
+  if (S.server && $("#bcndlg").open) renderBeacons();
   const away = !!(S.settings && S.settings.away_mode), ab = $("#awaybtn");
   ab.textContent = away ? "Away mode: ON" : "Away mode";
   ab.classList.toggle("awayon", away);
@@ -603,8 +612,15 @@ function renderAlerts() {
     browserNotify(`req|${d.id}|${x.session || x.name}|${x.at}`, `DeviceHub · ${d.name}`,
       `${x.name} asks to use it: ${x.purpose}${x.deadline ? ` (yes automatically at ${hm(x.deadline)})` : ""}`, d.id, x);
   }
+  for (const b of (S.server ? S.server.beacons : []).filter(b => b.state === "pending")) {
+    liveReq.add(`bcn|${b.id}`);
+    out.push(`<div class="alert ask"><span class="t">${hm(b.first)}</span><span class="txt">New device wants to join: <b>${esc(b.name || b.id)}</b> (${esc(b.cfw || "?")}${b.cfw_version ? " " + esc(b.cfw_version) : ""}, ${esc(b.ip)}${b.mac ? ", " + esc(b.mac) : ""})${b.ssh === "down" ? " · <b>SSH is off on it</b>" : ""}</span>
+      <button class="small primary" data-act="bcn-approve" data-bid="${esc(b.id)}">Approve</button>
+      <button class="small" data-act="bcn-deny" data-bid="${esc(b.id)}">Deny</button></div>`);
+    browserNotify(`bcn|${b.id}`, "DeviceHub · new device", `${b.name || b.id} (${b.cfw || "?"}, ${b.ip}) wants to join`, null);
+  }
   for (const a of [...S.alerts].reverse()) {
-    if (a.kind === "approval") continue;   // shown once, as the Approve/Deny row above
+    if (a.kind === "approval" || a.kind === "enroll") continue;   // shown once, as the Approve/Deny row above
     const dn = a.dev ? (S.devices.find(x => x.id === a.dev) || {}).name : "";
     out.push(`<div class="alert" data-dev="${esc(a.dev || "")}"><span class="t">${hm(a.t)}</span><span class="txt">${dn ? `<b>${esc(dn)}</b> · ` : ""}${esc(a.text)}</span>
       <button class="small" data-act="dismiss" data-id="${a.id}">Dismiss</button></div>`);
@@ -691,6 +707,13 @@ document.addEventListener("click", async e => {
   const host = b.closest("[data-dev]"), dev = host && host.dataset.dev, d = S && S.devices.find(x => x.id === dev);
   const a = b.dataset.act;
   if (a === "dismiss") return act(api("POST", "/api/alerts/dismiss", { id: +b.dataset.id }), " ");
+  if (a.startsWith("bcn-")) {
+    const verb = a.slice(4);
+    if (verb === "forget" && !confirm("Forget this beacon? If it announces again it asks to join again (its device card stays).")) return;
+    await act(api("POST", `/api/beacons/${b.dataset.bid}/${verb}`, {}), { approve: "Approved: it gets the hub's SSH key on its next announce", deny: "Turned down", forget: "Forgotten" }[verb]);
+    if ($("#bcndlg").open) renderBeacons();
+    return;
+  }
   if (!d) return;
   const lk = d.lock;
   switch (a) {
@@ -1065,6 +1088,8 @@ function fileKv(j, i, kv) {
   if (i.kind === "url") return kv("Port", esc(i.title)) + kv("URL", `<span class="mono" style="word-break:break-all">${esc(j.url)}</span>`) +
     kv("How", "the device downloads it with its own harbourmaster (needs internet)" + (/\.md5$/i.test(j.url) ? " and checks it against the .md5" : ""));
   if (i.kind === "squashfs") return kv("Runtime", esc(i.title || j.name)) + kv("File", esc(j.name) + " · " + fmtMB(j.size)) + kv("Goes to", "PortMaster/libs/");
+  if (i.kind === "portmaster") return kv("Update", esc(i.title)) + kv("Zip", esc(j.name) + " · " + fmtMB(j.size)) +
+    kv("Contents", (i.files || 0) + " files, " + fmtMB(i.uncompressed || 0) + " unpacked");
   return kv("Port", esc(i.title || "(no title in port.json)")) + kv("Zip", esc(j.name) + " · " + fmtMB(j.size)) +
     kv("Launchers", esc((i.launchers || []).join(", ") || "none")) + kv("Folders", esc((i.dirs || []).join(", ") || "none")) +
     kv("Contents", (i.files || 0) + " files, " + fmtMB(i.uncompressed || 0) + " unpacked");
@@ -1083,7 +1108,7 @@ function renderPreviewAll() {
     <div class="msgs">${(i.errors || []).map(e => `<div class="e">${esc(e)}</div>`).join("")}${(i.warnings || []).map(w => `<div class="w">${esc(w)}</div>`).join("")}</div>
     ${j.upload || j.url ? `<div class="opts"><b>Devices</b><div class="tlist">${rows}</div>
       ${i.kind === "squashfs" ? `<div class="sub">Copied to each device's PortMaster libs folder at the same time (SHA-1 checked); no front-end refresh needed.</div>` : `
-      <div class="sub">Each device installs with its own PortMaster (harbourmaster), all at the same time; an installed copy is updated in place (saves stay).</div>
+      <div class="sub">Each device installs with its own PortMaster (harbourmaster), all at the same time; an installed copy is updated in place (saves stay).${j.upload && S.settings.install_serve ? " Each device downloads the zip from DeviceHub itself (md5 checked)." : ""}</div>
       <b>Afterwards</b>
       <label><input type="radio" name="refresh" value="reload" checked> Reload the game list (devices that can't: restart the front end)</label>
       <label><input type="radio" name="refresh" value="restart"> Restart the front end</label>
@@ -1473,8 +1498,40 @@ $("#eddelete").onclick = async () => {
   if (j.ok === false) return snack(j.error, true);
   $("#ed").close(); snack("Deleted"); refresh();
 };
-$("#addbtn").onclick = () => openEditor(null);
+$("#addbtn").onclick = () => { if (S && S.server) { renderBeacons(); $("#bcndlg").showModal(); } else openEditor(null); };
 $("#installbtn").onclick = () => openInstall(null);
+
+// ------------------------------------------------------------ server mode: beacons, log out
+function renderBeacons() {
+  const st = { pending: "waiting for you", approved: "approved", denied: "turned down" };
+  const rows = S.server.beacons.slice().sort((a, b) => b.last - a.last).map(b => `<tr>
+      <td><b>${esc(b.name || b.id)}</b><span class="sub mono">${esc(b.id)}</span></td>
+      <td>${esc(b.cfw || "?")} ${esc(b.cfw_version || "")}<span class="sub">${esc(b.ip)} · ${esc(b.user)}${b.mac ? " · " + esc(b.mac) : ""}</span></td>
+      <td>${esc(st[b.state] || b.state)}${b.dev ? `<span class="sub">card: ${esc(b.dev)}</span>` : ""}<span class="sub">${b.keyok === "1" ? "hub key installed" : b.keyok === "fail" ? "key failed: password login" : "no hub key yet"}${b.autostart === "1" ? " · autostart" : ""}</span></td>
+      <td><span class="sub">${S.now - b.last < 120 ? "just now" : mins(S.now - b.last) + " ago"}</span></td>
+      <td class="opt">${b.state !== "approved" ? `<button type="button" class="small primary" data-act="bcn-approve" data-bid="${esc(b.id)}">Approve</button>` : ""}
+        ${b.state === "pending" ? `<button type="button" class="small" data-act="bcn-deny" data-bid="${esc(b.id)}">Deny</button>` : ""}
+        <button type="button" class="small danger" data-act="bcn-forget" data-bid="${esc(b.id)}">Forget</button></td></tr>`).join("");
+  const html = `<p><a href="/api/beacon/port.zip?autostart=1" download="devicehub.zip"><button type="button" class="primary">Download devicehub.zip</button></a></p>
+    <ol class="sub" style="padding-left:18px;margin:0 0 10px">
+      <li>Put <b>devicehub.zip</b> in the device's PortMaster <span class="mono">autoinstall</span> folder (or install it with PortMaster), and switch SSH on.</li>
+      <li>Run <b>DeviceHub Beacon</b> from Ports.</li>
+      <li>Approve it here. The device sends its name, CFW, address, screen and SSH keys itself; the hub then connects with its own key, and it shows up as a card.</li></ol>
+    <p class="sub">It also sets itself up to announce the device after every boot. <a href="/api/beacon/port.zip?autostart=0" download="devicehub.zip">Download without autostart</a> ·
+      <a href="#" id="bcnmanual">add a device by hand</a> · <a href="#" id="bcnrotate" title="old beacon ports stop working">change the beacon key</a></p>
+    <p class="sub">The port carries this hub's beacon key: keep it to your own devices. Announcing to: ${esc(S.server.public_url || location.origin)}</p>
+    ${rows ? `<div class="tablewrap"><table class="ports"><thead><tr><th>Device</th><th>CFW · address</th><th>State</th><th>Seen</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+           : `<div class="sub">No beacon has announced itself yet.</div>`}`;
+  const el = $("#bcnbody"); if (el._html !== html) { el.innerHTML = html; el._html = html; }
+}
+$("#bcnbody").addEventListener("click", async e => {
+  if (e.target.id === "bcnmanual") { e.preventDefault(); $("#bcndlg").close(); return openEditor(null); }
+  if (e.target.id !== "bcnrotate") return;
+  e.preventDefault();
+  if (!confirm("Make a new beacon key? Every beacon port downloaded so far stops working until you download and copy the new one.")) return;
+  await act(api("POST", "/api/beacon/rotate", {}), "New beacon key: download the port again");
+});
+$("#logoutbtn").onclick = async () => { await fetch("/logout", { method: "POST", headers: { "X-DevHub-Token": TOKEN } }); location.href = "/login"; };
 
 // ------------------------------------------------------------ settings
 const SETTINGS = [
@@ -1494,8 +1551,13 @@ const SETTINGS = [
   ["battery_shutdown_pct", "Off the charger: shut the device down cleanly at this battery level (%, 0 = off)", "number"],
   ["toasts", "Windows notifications (WSL only) when no DeviceHub page with notifications on is open (otherwise the page notifies)", "checkbox"],
   ["notify_cmd", "Notification command (optional, any platform; gets DEVHUB_TITLE, DEVHUB_TEXT, DEVHUB_URL, DEVHUB_KIND), e.g. notify-send \"$DEVHUB_TITLE\" \"$DEVHUB_TEXT\"", "text"],
+  ["install_serve", "Install on all: each device downloads the zip from DeviceHub over HTTP, md5 checked (off: DeviceHub copies it to every device over SSH; needs the devices to reach this machine, so off under WSL)", "checkbox"],
   ["retrocatalog", "Device types from Retro Catalog (retrocatalog.com): the editor reads its model list and a model's spec page when you pick it", "checkbox"],
 ];
+function settingsList() {
+  return S && S.server ? SETTINGS.concat([["beacon_auto_approve", "Beacons: new handhelds join without asking me (trusted network only)", "checkbox"],
+    ["poll_devices", "Poll devices: check every device every 10 s and connect whenever it answers, even if it didn't announce itself (off: only devices that announced, or after Connect)", "checkbox"]]) : SETTINGS;
+}
 // Away mode: sessions' requests for a free device are approved at once (no notification, no waiting)
 $("#awaybtn").onclick = async () => {
   const on = !(S.settings && S.settings.away_mode);
@@ -1507,7 +1569,7 @@ $("#awaybtn").onclick = async () => {
 };
 $("#settingsbtn").onclick = () => {
   const s = S.settings;
-  $("#setbody").innerHTML = `<fieldset>${SETTINGS.map(([k, label, t]) => {
+  $("#setbody").innerHTML = `<fieldset>${settingsList().map(([k, label, t]) => {
     if (t === "checkbox") return `<label class="f cb wide"><input id="s_${k}" type="checkbox" ${s[k] ? "checked" : ""}><span>${label}</span></label>`;
     if (Array.isArray(t)) return `<label class="f wide"><span>${label}</span><select id="s_${k}">${t.map(([v, l]) => `<option value="${v}" ${s[k] === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>`;
     return `<label class="f"><span>${label}</span><input id="s_${k}" type="${t}" value="${esc(s[k])}"></label>`;
@@ -1518,7 +1580,7 @@ $("#settingsbtn").onclick = () => {
 $("#setform").addEventListener("submit", async e => {
   e.preventDefault();
   const out = {};
-  for (const [k, , t] of SETTINGS) { const el = $("#s_" + k); out[k] = t === "checkbox" ? el.checked : t === "number" ? Number(el.value) : el.value; }
+  for (const [k, , t] of settingsList()) { const el = $("#s_" + k); out[k] = t === "checkbox" ? el.checked : t === "number" ? Number(el.value) : el.value; }
   const j = await api("PUT", "/api/settings", { settings: out });
   if (j.ok === false) return snack(j.error, true);
   $("#setdlg").close(); snack("Settings saved"); refresh();
