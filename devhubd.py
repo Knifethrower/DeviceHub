@@ -2718,6 +2718,9 @@ for t in $(pidof tee 2>/dev/null); do
 done
 for f in /userdata/system/logs/es_launch_stdout.log /userdata/system/logs/es_launch_stderr.log; do src "front end launch log" "$f"; done
 [ -n "$PM" ] && src "PortMaster log" "$PM/log.txt"
+printf '%s' "$LOGS" | while IFS='	' read -r label glob; do   # the CFW preset's own logs (data/presets.json)
+  [ -n "$glob" ] && eval "ls -t $glob" 2>/dev/null | head -6 | while IFS= read -r f; do src "$label" "$f"; done
+done
 find /tmp -maxdepth 2 \( -name '*.log' -o -name 'log.txt' \) -mmin -180 2>/dev/null | head -12 | while IFS= read -r f; do src "recent /tmp log" "$f"; done
 true
 """
@@ -2733,10 +2736,29 @@ $S tail -c +$((O + 1)) "$P" 2>/dev/null | head -c 65536
 """
 
 
+def load_local_presets():
+    """data/presets.json: your own CFW presets, {"Name": {preset fields, "logs": [["label", "glob"], ...]}}; listed
+    before "Other". "logs" adds console sources (newest 6 files per glob, $HOME allowed)."""
+    try:
+        extra = load_json("presets.json", {})
+        other = CFW_PRESETS.pop("Other", {})
+        for name, p in extra.items():
+            if isinstance(p, dict):
+                CFW_PRESETS[str(name)[:40]] = p
+        CFW_PRESETS["Other"] = other
+        if extra:
+            log("local presets:", ", ".join(extra))
+    except Exception as e:
+        log("data/presets.json not loaded:", e)
+
+
 def console_sources(dev, d):
     st = rt(dev)["status"] or {}
     app = (st.get("app") or {}).get("pid") or ""
-    rc, out, err = ssh_run(d, "sh -s", inp=remote_sh(CONSOLE_SOURCES, APP=app, PMDIR=d.get("pm_dir") or "").encode(), timeout=30)
+    logs = "".join("%s\t%s\n" % (str(l).replace("\t", " "), g) for l, g in
+                   (CFW_PRESETS.get(d.get("cfw") or "", {}).get("logs") or []))
+    rc, out, err = ssh_run(d, "sh -s", inp=remote_sh(CONSOLE_SOURCES, APP=app, PMDIR=d.get("pm_dir") or "",
+                                                    LOGS=logs).encode(), timeout=30)
     found = {}
     for line in out.decode("utf-8", "replace").splitlines():
         if line.startswith("SRC="):
@@ -4430,6 +4452,7 @@ def main():
     lp = jpath("devhubd.log")
     if os.path.exists(lp) and os.path.getsize(lp) > 2_000_000:
         os.replace(lp, lp + ".1")
+    load_local_presets()
     for d in load_json("devices.json", {"devices": []}).get("devices", []):
         try:
             d = clean_device(d)

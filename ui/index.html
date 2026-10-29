@@ -1250,7 +1250,7 @@ const TYPES = {
   "TrimUI Brick": ["Allwinner A133P", "PowerVR GE8300", 1024, "1024x768"],
   "Retroid Pocket 5": ["Qualcomm Snapdragon 865", "Adreno 650", 8192, "1920x1080"],
 };
-const CFWS = ["Knulli", "ROCKNIX", "muOS", "dArkOS", "ArkOS", "AmberELEC", "JELOS", "Batocera", "Other"];
+const CFWS = () => Object.keys((S && S.presets) || { Other: 1 });   // the hub's presets, plus data/presets.json
 // fields that belong to an SD-card profile (the rest belong to the device)
 const CARD_KEYS = ["cfw", "port", "user", "auth", "identity", "smb", "ports_dir", "pm_dir", "fe_proc", "fe_start", "fe_stop", "fe_reload", "fe_alt"];
 let edCards = [], edIdx = 0, edDev = null;
@@ -1263,7 +1263,7 @@ const FIELDS = [
     { k: "id", label: "ID", ph: "rg35xx", help: "short; used in commands: devhub acquire rg35xx", createOnly: true },
     { k: "type", label: "Device type", list: "types", help: "pick a model from the list: its hardware is filled in from Retro Catalog" },
     { k: "rc_slug", type: "hidden" },
-    { k: "cfw", label: "CFW", select: CFWS.map(x => [x, x]), help: "fills in login, ports folder and front-end commands" },
+    { k: "cfw", label: "CFW", select: () => CFWS().map(x => [x, x]), help: "fills in login, ports folder and front-end commands" },
   ]],
   ["Connection", [
     { k: "host", label: "IP address", ph: "192.168.1.50" },
@@ -1359,7 +1359,8 @@ function field(f, v, d) {
   if (f.type === "hidden") return `<input type="hidden" id="${id}" value="${esc(v[f.k] || "")}"><div class="f wide" id="rcnote">${rcNote(v.rc_slug)}</div>`;
   if (f.type === "checkbox") return `<label class="${cls}" data-show="${f.k}"><input id="${id}" type="checkbox" ${v[f.k] ? "checked" : ""}><span>${(CARD_KEYS.includes(f.k) || f.k === "_pw") && edCards.length > 1 ? "▣ " : ""}${f.label}</span></label>`;
   let input;
-  if (f.select) input = `<select id="${id}">${(v[f.k] && !f.select.some(([val]) => val === String(v[f.k])) ? [[String(v[f.k]), String(v[f.k])]] : []).concat(f.select).map(([val, lab]) => `<option value="${esc(val)}" ${String(v[f.k]) === val ? "selected" : ""}>${esc(lab)}</option>`).join("")}</select>`;
+  const opts = typeof f.select === "function" ? f.select() : f.select;
+  if (opts) input = `<select id="${id}">${(v[f.k] && !opts.some(([val]) => val === String(v[f.k])) ? [[String(v[f.k]), String(v[f.k])]] : []).concat(opts).map(([val, lab]) => `<option value="${esc(val)}" ${String(v[f.k]) === val ? "selected" : ""}>${esc(lab)}</option>`).join("")}</select>`;
   else if (f.type === "textarea") input = `<textarea id="${id}" rows="2" placeholder="${esc(f.ph || "")}">${esc(v[f.k] || "")}</textarea>`;
   else input = `<input id="${id}" ${f.type === "number" ? 'type="number" min="0"' : 'type="text"'} ${f.list ? `list="${f.list}"` : ""} value="${esc(v[f.k] ?? "")}"
       placeholder="${esc(f.ph || "")}" ${f.createOnly && d ? "disabled" : ""} ${f.mono ? 'class="mono"' : ""} spellcheck="false">`;

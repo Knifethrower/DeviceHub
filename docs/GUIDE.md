@@ -103,6 +103,23 @@ agents see [AGENTS.md](AGENTS.md).
 *Also counts as the front end running* (`fe_alt`, e.g. `lightdm`) makes a normal desktop count as a clean, running
 front end (the card says "desktop"); desktop programs never count as an app left running.
 
+## Your own CFW presets
+
+`data/presets.json` adds presets to the editor's *CFW* menu (restart DeviceHub after changing it). Any preset field
+works (`user`, `auth`, `ports_dir`, `smb_share`, `fe_proc`, `fe_alt`, `fe_start`, `fe_stop`, `fe_reload`), and
+`logs` adds Console sources: a label and a shell glob each, newest 6 files per glob.
+
+```json
+{
+  "My Linux PC": {
+    "user": "me", "auth": "key", "ports_dir": "/roms/ports",
+    "fe_proc": "my-launcher", "fe_alt": "lightdm",
+    "fe_start": "sudo systemctl start my-launcher", "fe_stop": "sudo systemctl stop my-launcher",
+    "logs": [["launcher log", "$HOME/.local/state/my-launcher/*.log"]]
+  }
+}
+```
+
 ## Running it
 
 - **Windows**: double-click **Start DeviceHub.bat** (starts it and opens the dashboard), **Stop DeviceHub.bat**,
