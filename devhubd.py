@@ -3491,8 +3491,11 @@ def r_cli(body, q):
 
 @route("GET", "/agent-guide.md", auth=False)
 def r_agent_guide(body, q):
-    with open(os.path.join(HERE, "docs", "AGENTS.md"), "rb") as f:
-        return ("text/markdown; charset=utf-8", f.read())
+    try:
+        with open(os.path.join(HERE, "docs", "AGENTS.md"), "rb") as f:
+            return ("text/markdown; charset=utf-8", f.read())
+    except OSError:
+        raise ApiError(404, "docs/AGENTS.md is missing next to devhubd.py (an image built without docs/?)")
 
 
 @route("GET", "/api/agents")

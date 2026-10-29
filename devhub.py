@@ -875,7 +875,12 @@ def c_agent_guide(a):
             raise
     c = hub_conn(30)      # devhub downloaded on its own (from the hub): the hub has the guide
     c.request("GET", "/agent-guide.md")
-    sys.stdout.write(c.getresponse().read().decode("utf-8", "replace"))
+    r = c.getresponse()
+    text = r.read().decode("utf-8", "replace")
+    if r.status != 200:
+        print("could not get the agent guide from %s (HTTP %d): %s" % (REMOTE, r.status, text[:200]), file=sys.stderr)
+        return 1
+    sys.stdout.write(text)
     return 0
 
 
