@@ -1552,7 +1552,8 @@ const SETTINGS = [
   ["retrocatalog", "Device types from Retro Catalog (retrocatalog.com): the editor reads its model list and a model's spec page when you pick it", "checkbox"],
 ];
 function settingsList() {
-  return S && S.server ? SETTINGS.concat([["beacon_auto_approve", "Beacons: new handhelds join without asking me (trusted network only)", "checkbox"]]) : SETTINGS;
+  return S && S.server ? SETTINGS.concat([["beacon_auto_approve", "Beacons: new handhelds join without asking me (trusted network only)", "checkbox"],
+    ["poll_devices", "Poll devices: check every device every 10 s and connect whenever it answers, even if it didn't announce itself (off: only devices that announced, or after Connect)", "checkbox"]]) : SETTINGS;
 }
 // Away mode: sessions' requests for a free device are approved at once (no notification, no waiting)
 $("#awaybtn").onclick = async () => {

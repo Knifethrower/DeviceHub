@@ -46,6 +46,7 @@ only reaches out to a device that announced itself in the last 2½ minutes (the 
 for one minute after you press **Connect** on its card (how devices added by hand get connected). A connection that
 is already open stays while it lives. So a device is on the hub only while its beacon runs: from its boot hook, or
 because you ran the port since it booted. When it stops announcing, its card goes offline and the hub leaves it alone.
+*Settings > Poll devices* brings back local DeviceHub's behaviour (probe every device, connect whenever it answers).
 
 ## The protocol
 

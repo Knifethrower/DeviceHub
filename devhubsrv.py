@@ -31,7 +31,9 @@ BEACON_DIR = os.path.join(D.HERE, "beacon")
 OPEN_PATHS = {"/api/ping", "/api/beacon/hello", "/api/beacon", "/login", "/sw.js"}
 
 D.DEFAULT_SETTINGS["beacon_auto_approve"] = False   # new handhelds join without asking (trusted LAN)
-H.settings.setdefault("beacon_auto_approve", False)
+D.DEFAULT_SETTINGS["poll_devices"] = False          # probe every device and connect when it answers, like local DeviceHub
+for _k in ("beacon_auto_approve", "poll_devices"):
+    H.settings.setdefault(_k, False)
 H.beacons = {}      # beacon id -> record (beacons.json)
 H.nonces = {}       # nonce -> expiry
 H.login_fails = []
@@ -427,6 +429,7 @@ D.ROUTES[:] = [(m, rx, r_state if fn is _r_state else fn, a, raw) for m, rx, fn,
 # Local DeviceHub probes every device's SSH port every 10 s and connects whenever it answers. Here devices come and go,
 # so the hub only reaches out to a device that announced itself within ANNOUNCE_LEASE_S (the beacon re-announces every
 # minute), or for a minute after you press Connect (devices added by hand). An open connection is kept while it lives.
+# Settings > poll_devices brings back the local behaviour.
 
 ANNOUNCE_LEASE_S = 150
 CONNECT_WINDOW_S = 60
@@ -442,7 +445,7 @@ def upkeep(dev):
     if not d:
         return
     r = D.rt(dev)
-    if (not d["enabled"] or now() - last_announce(dev) < ANNOUNCE_LEASE_S or now() < r.get("connect_until", 0)
+    if (H.settings.get("poll_devices") or not d["enabled"] or now() - last_announce(dev) < ANNOUNCE_LEASE_S or now() < r.get("connect_until", 0)
             or D.master_alive(d)[0]):
         return _upkeep(dev)
     if r["online"]:
