@@ -2,6 +2,8 @@
 FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends openssh-client openssl procps curl \
     && rm -rf /var/lib/apt/lists/*
+# plain known_hosts entries, so the hub's host-key pins stay readable
+RUN printf 'Host *\n    HashKnownHosts no\n' > /etc/ssh/ssh_config.d/devicehub.conf
 WORKDIR /app
 COPY devhubd.py devhubsrv.py devhub.py ./
 COPY ui ui

@@ -81,20 +81,29 @@ D.known_hosts_file = known_hosts_file
 
 def pin_host_keys(d, keys):
     """The beacon's signed host keys become the only accepted ones for this host:port (other devices' old entries
-    for the same IP go). No keys sent (unreadable on that CFW): the entry is cleared and ssh learns it on connect."""
+    for the same IP go, hashed ones too: Debian's ssh hashes what it learns). No keys sent (unreadable on that CFW):
+    the entries are cleared and ssh learns the key on connect. Returns True when the file changed."""
     p = known_hosts_file(d)
     spec = d["host"] if d["port"] == 22 else "[%s]:%d" % (d["host"], d["port"])
+    want = ["%s %s" % (spec, k) for k in keys]
     try:
         with open(p, encoding="utf-8") as f:
-            lines = f.read().splitlines()
+            before = f.read()
     except FileNotFoundError:
-        lines = []
-    keep = [ln for ln in lines if ln.split(" ", 1)[0] != spec]
-    keep += ["%s %s" % (spec, k) for k in keys]
-    if keep == lines:
+        before = ""
+    found = subprocess.run(["ssh-keygen", "-F", spec, "-f", p], capture_output=True, text=True).stdout if before else ""
+    have = [ln for ln in found.splitlines() if ln and not ln.startswith("#")]
+    if sorted(have) == sorted(want):
         return False
-    with open(p, "w", encoding="utf-8") as f:
-        f.write("".join(ln + "\n" for ln in keep))
+    if have:
+        subprocess.run(["ssh-keygen", "-R", spec, "-f", p], capture_output=True)
+        try:
+            os.remove(p + ".old")
+        except OSError:
+            pass
+    if want:
+        with open(p, "a", encoding="utf-8") as f:
+            f.write("".join(ln + "\n" for ln in want))
     return True
 
 
