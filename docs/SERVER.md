@@ -6,8 +6,10 @@ passwords. Everything else (locks, approvals, queues, installs, screenshots, the
 
 ## Run it
 
+Copy `server/compose.yaml` into its own folder (a stacks folder is fine): it builds the image from the git repo,
+so no checkout is needed there.
+
 ```bash
-cd server
 echo "DEVHUB_PASSWORD=choose-one" > .env
 echo "DEVHUB_PUBLIC_URL=http://192.168.1.10:8765" >> .env   # this server's LAN address
 docker compose up -d --build
