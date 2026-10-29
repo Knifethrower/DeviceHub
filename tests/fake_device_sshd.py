@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Throwaway SSH server for testing DeviceHub: password auth, exec channels run through sh locally.
-usage: fake_device_sshd.py PORT PASSWORD_FILE HOSTKEY_FILE   (needs paramiko; the host key is made if missing)"""
+usage: fake_device_sshd.py PORT PASSWORD_FILE HOSTKEY_FILE [AUTHORIZED_KEYS]
+(needs paramiko; the host key is made if missing, with a .pub next to it; with AUTHORIZED_KEYS, keys listed in that
+file are accepted too, read at each login like sshd does)"""
 import logging, os, socket, subprocess, sys, threading
 import paramiko
 
@@ -11,6 +13,9 @@ PW = open(sys.argv[2]).read().strip()
 if not os.path.exists(sys.argv[3]):
     paramiko.RSAKey.generate(2048).write_private_key_file(sys.argv[3])
 KEY = paramiko.RSAKey(filename=sys.argv[3])
+with open(sys.argv[3] + ".pub", "w") as f:
+    f.write("%s %s\n" % (KEY.get_name(), KEY.get_base64()))
+AUTH_KEYS = sys.argv[4] if len(sys.argv) > 4 else None
 
 
 class Srv(paramiko.ServerInterface):
@@ -18,7 +23,15 @@ class Srv(paramiko.ServerInterface):
         return paramiko.OPEN_SUCCEEDED if kind == "session" else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
     def get_allowed_auths(self, username):
-        return "password"
+        return "publickey,password" if AUTH_KEYS else "password"
+
+    def check_auth_publickey(self, username, key):
+        try:
+            with open(AUTH_KEYS) as f:
+                ok = any(line.split()[1:2] == [key.get_base64()] for line in f if line.strip())
+        except OSError:
+            ok = False
+        return paramiko.AUTH_SUCCESSFUL if ok else paramiko.AUTH_FAILED
 
     def check_auth_password(self, username, password):
         return paramiko.AUTH_SUCCESSFUL if password == PW else paramiko.AUTH_FAILED

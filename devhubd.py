@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.abspath(os.environ.get("DEVHUB_DATA") or os.path.join(HERE, "data"))
 PORT = int(os.environ.get("DEVHUB_PORT") or 8765)
+BIND = os.environ.get("DEVHUB_BIND") or "127.0.0.1"   # server mode (devhubsrv.py) listens on the LAN
 RUN = "/tmp/devhub-%d-%d" % (os.getuid(), PORT)
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
@@ -1180,7 +1181,16 @@ def touch_session(sid, name=None, transcript=None):
         return s
 
 
+# Server mode's request gate (devhubsrv.py): GATE(handler, method, path, query, auth) checks login and token in place
+# of the loopback Host check, and returns a response tuple to send instead (a redirect to the login page) or None.
+# REQ.ui says whether this request may speak as the user (client "ui"): always locally, only when logged in there.
+GATE = None
+REQ = threading.local()
+
+
 def caller(body):
+    if body.get("client") == "ui" and not getattr(REQ, "ui", True):
+        raise ApiError(403, "log in to DeviceHub to act as the user")
     if body.get("client") == "ui":
         return {"session": None, "name": H.settings.get("user_name") or "user", "ui": True}
     sid = str(body.get("session") or "").strip() or None
@@ -2857,11 +2867,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             host = host[1:host.index("]")] if host.startswith("[") and "]" in host else host.split(":")[0]
             if hit and hit[2]:
                 self.close_connection = True   # body may be left unread if we refuse below
-            if host not in ("127.0.0.1", "localhost", "::1"):
+            REQ.ui = True
+            if GATE:
+                res = GATE(self, method, u.path, q, bool(hit and hit[1]))
+                if res:
+                    self.reply(*res)
+                    return
+            elif host not in ("127.0.0.1", "localhost", "::1"):
                 raise ApiError(403, "bad Host header")
             if hit:
                 fn, auth, raw_body, mt = hit
-                if auth:
+                if auth and not GATE:
                     tok = self.headers.get("X-DevHub-Token") or (q.get("t") or [""])[0]
                     if not secrets.compare_digest(tok.encode(), TOKEN.encode()):
                         raise ApiError(401, "missing or wrong token")
@@ -4028,14 +4044,14 @@ def main():
     import_lock_files()
     save_state()
     try:
-        HTTPD = Server(("127.0.0.1", PORT), Handler)
+        HTTPD = Server((BIND, PORT), Handler)
     except OSError as e:
-        print("DeviceHub: cannot listen on 127.0.0.1:%d (%s) - already running?" % (PORT, e), file=sys.stderr)
+        print("DeviceHub: cannot listen on %s:%d (%s) - already running?" % (BIND, PORT, e), file=sys.stderr)
         sys.exit(1)
     signal.signal(signal.SIGTERM, lambda *a: threading.Thread(target=HTTPD.shutdown, daemon=True).start())
     threading.Thread(target=loop, daemon=True).start()
-    log("DeviceHub %s (%s) listening on http://127.0.0.1:%d, data in %s, %d devices" % (
-        VERSION, "WSL" if PLATFORM == "wsl" else "Linux", PORT, DATA, len(H.devices)))
+    log("DeviceHub %s (%s) listening on http://%s:%d, data in %s, %d devices" % (
+        VERSION, "WSL" if PLATFORM == "wsl" else "Linux", BIND, PORT, DATA, len(H.devices)))
     event(None, "hub", "DeviceHub started")
     try:
         HTTPD.serve_forever()
