@@ -91,7 +91,11 @@ CFW_PRESETS = {
     "ArkOS": {"user": "ark", "auth": "password", "ports_dir": "/roms/ports", "smb_share": "roms",
               "fe_proc": "emulationstation", "fe_start": "sudo systemctl start emulationstation",
               "fe_stop": "sudo systemctl stop emulationstation"},
-    "muOS": {"user": "root", "auth": "key", "ports_dir": "", "smb_share": "", "fe_proc": "", "fe_start": "", "fe_stop": ""},
+    # FRONTEND is muOS's own front-end control; /etc/profile puts it on the PATH of a plain SSH command. The start runs
+    # in the background so the SSH command returns; with no process name set, a start is sent but not verified.
+    "muOS": {"user": "root", "auth": "key", "ports_dir": "", "smb_share": "", "fe_proc": "",
+             "fe_start": "(. /etc/profile >/dev/null 2>&1; FRONTEND start) >/dev/null 2>&1 </dev/null &",
+             "fe_stop": ". /etc/profile >/dev/null 2>&1; FRONTEND stop"},
     "Other": {},
 }
 
