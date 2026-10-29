@@ -53,6 +53,8 @@ DEVICE_NAME='Smoke RG35XX'
 DISPLAY_WIDTH='640'
 DISPLAY_HEIGHT='480'
 DEVICE_RAM='1024'
+PM_DIR='/storage/roms/ports/PortMaster'
+PORTS_DIR='/storage/roms/ports'
 EOF
 # the beacon sees only busybox (no curl, no openssl): busybox wget and the pure-sh HMAC, like a bare handheld
 mkdir -p "$T/bin"; for a in $(busybox --list); do ln -s "$(command -v busybox)" "$T/bin/$a"; done
@@ -80,7 +82,7 @@ for i in $(seq 40); do
     [ "$i" = 40 ] && fail "the hub did not connect with its key"
     sleep 0.5
 done
-$C "http://127.0.0.1:$HUB/api/state" | $PY -c "import json,sys; d=json.load(sys.stdin); v=[x for x in d['devices'] if x['id']=='$DEV'][0]; assert v['auth']=='key' and v['cfw']=='ROCKNIX' and v['ports_dir']=='/storage/roms/ports' and v['screen']=='640x480', v" || fail "device profile"
+$C "http://127.0.0.1:$HUB/api/state" | $PY -c "import json,sys; d=json.load(sys.stdin); v=[x for x in d['devices'] if x['id']=='$DEV'][0]; assert v['auth']=='key' and v['cfw']=='ROCKNIX' and v['ports_dir']=='/storage/roms/ports' and v['screen']=='640x480' and v['pm_dir']=='/storage/roms/ports/PortMaster', v" || fail "device profile"
 ok "hub connected with its key ($DEV)"
 
 # --- an agent through the token

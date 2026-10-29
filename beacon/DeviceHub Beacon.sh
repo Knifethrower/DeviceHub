@@ -25,6 +25,8 @@ cd "$GAMEDIR" || exit 1
     eval "x=\${$v}"
     printf "%s='%s'\n" "$v" "$(printf '%s' "$x" | tr -d "'\r\n")"
   done
+  # where PortMaster and the ports really are on this device (installs go there)
+  printf "PM_DIR='%s'\nPORTS_DIR='%s'\n" "$controlfolder" "/$directory/ports"
 } > "$GAMEDIR/device.env"
 
 printf "\033c" > "$CUR_TTY" 2>/dev/null

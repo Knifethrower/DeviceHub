@@ -264,6 +264,9 @@ def r_beacon(h, q):
     keyok = kv.get("keyok", "0")
     facts = {k: kv.get(k, "") for k in ("name", "cfw", "cfw_version", "hostname", "mac", "ssh", "autostart", "width",
                                         "height", "ram", "cpu", "arch", "kernel")}
+    for k in ("pm_dir", "ports_dir"):     # PortMaster's own paths on the device; absolute, no shell specials
+        v = kv.get(k, "")
+        facts[k] = v if re.match(r"^/[A-Za-z0-9._/ -]*$", v) and ".." not in v else ""
     with H.lock:
         b = H.beacons.get(bid)
         new = b is None
@@ -322,6 +325,7 @@ def sync_device(b):
             share = D.CFW_PRESETS.get(cfw, {}).get("smb_share")
             src.update(id=new_dev_id(b.get("name")), name=b.get("name") or b["id"], host=b["ip"], port=b["port"],
                        user=b["user"], cfw=cfw, auth="key" if key_ok else "password",
+                       **{k: b[k] for k in ("pm_dir", "ports_dir") if b.get(k)},
                        identity=hub_key_path() if key_ok else "",
                        smb="\\\\%s\\%s" % (b["ip"], share) if share else "",
                        screen="%sx%s" % (b["width"], b["height"]) if b.get("width") and b.get("height") else "",
@@ -339,7 +343,8 @@ def sync_device(b):
             D.rt(d["id"])["poke"] = True
             return "added as %s" % d["id"]
         dev, old = d["id"], d
-        change = {k: v for k, v in (("host", b["ip"]), ("port", b["port"]), ("user", b["user"])) if old.get(k) != v}
+        change = {k: v for k, v in (("host", b["ip"]), ("port", b["port"]), ("user", b["user"]),
+                                    ("pm_dir", b.get("pm_dir")), ("ports_dir", b.get("ports_dir"))) if v and old.get(k) != v}
         if key_ok and old["auth"] == "password" and not D.secret_key(old) in H.secrets:
             change.update(auth="key", identity=hub_key_path())     # the key landed after all
     if change:

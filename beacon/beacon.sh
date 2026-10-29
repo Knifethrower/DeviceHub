@@ -187,6 +187,8 @@ announce() {
         echo "height=$(clean "$DISPLAY_HEIGHT")"
         echo "ram=$(clean "$DEVICE_RAM")"
         echo "cpu=$(clean "$DEVICE_CPU")"
+        echo "pm_dir=$(clean "$PM_DIR")"
+        echo "ports_dir=$(clean "$PORTS_DIR")"
         echo "arch=$(uname -m)"
         echo "kernel=$(uname -r)"
         host_keys | sort -u | sed 's/^/hostkey=/'
