@@ -91,9 +91,11 @@ def pin_host_keys(d, keys):
         lines = []
     keep = [ln for ln in lines if ln.split(" ", 1)[0] != spec]
     keep += ["%s %s" % (spec, k) for k in keys]
-    if keep != lines:
-        with open(p, "w", encoding="utf-8") as f:
-            f.write("".join(ln + "\n" for ln in keep))
+    if keep == lines:
+        return False
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("".join(ln + "\n" for ln in keep))
+    return True
 
 
 # ---------------------------------------------------------------- login (the web page) and the request gate
@@ -356,8 +358,15 @@ def sync_device(b):
             H.patterns.pop(dev, None)
             D.save_devices()
         event(dev, "beacon", "now at %s" % ", ".join("%s %s" % kv for kv in change.items() if kv[0] != "identity"))
-    pin_host_keys(d, b["hostkeys"])
+    repinned = pin_host_keys(d, b["hostkeys"])
     r = D.rt(dev)
+    if repinned and r["master"].get("block") == "hostkey_changed":
+        r["master"].pop("block", None)    # the device's signed announce brought its current keys: try again
+        r["master"]["retry"] = True
+        r["poke"] = True
+        with H.lock:
+            H.alerts[:] = [a for a in H.alerts if not (a["dev"] == dev and a.get("kind") == "ssh")]
+        event(dev, "ssh", "host keys updated from its announce; reconnecting")
     if change or r["master"]["state"] in ("offline", "error", "unknown"):
         r["master"]["next_try"] = 0
         r["poke"] = True

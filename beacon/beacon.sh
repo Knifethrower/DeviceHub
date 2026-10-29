@@ -105,16 +105,33 @@ ssh_listening() {   # something listens on TCP 22 (sshd or dropbear)
     grep -qs ' [0-9A-F]*:0016 [0-9A-F]*:0000 0A' /proc/net/tcp /proc/net/tcp6 && echo up || echo down
 }
 
-host_keys() {   # this device's SSH host public keys, one per line
-    if [ -n "$DH_HOSTKEYS" ]; then cat $DH_HOSTKEYS 2>/dev/null | cut -d' ' -f1,2; return; fi   # tests
-    for f in /etc/ssh/ssh_host_*_key.pub /storage/.cache/ssh/ssh_host_*_key.pub /storage/.ssh/ssh_host_*_key.pub; do
-        [ -f "$f" ] && cut -d' ' -f1,2 "$f"
-    done
-    if command -v dropbearkey >/dev/null 2>&1; then
-        for f in /etc/dropbear/dropbear_*_host_key /storage/.cache/dropbear/dropbear_*_host_key; do
-            [ -f "$f" ] && dropbearkey -y -f "$f" 2>/dev/null | grep '^ssh-' | cut -d' ' -f1,2
-        done
+pubkey_of() {   # private host key file -> "type base64" (its .pub, or derived from the key)
+    if [ -f "$1.pub" ]; then cut -d' ' -f1,2 "$1.pub"
+    elif command -v ssh-keygen >/dev/null 2>&1 && ssh-keygen -y -f "$1" >/dev/null 2>&1; then ssh-keygen -y -f "$1" | cut -d' ' -f1,2
+    elif command -v dropbearkey >/dev/null 2>&1; then dropbearkey -y -f "$1" 2>/dev/null | grep '^ssh-' | cut -d' ' -f1,2
     fi
+}
+
+host_keys() {   # the SSH host public keys this device really serves, one per line
+    if [ -n "$DH_HOSTKEYS" ]; then cat $DH_HOSTKEYS 2>/dev/null | cut -d' ' -f1,2; return; fi   # tests
+    # best: ask the running server itself (exactly what the hub will be shown)
+    if command -v ssh-keyscan >/dev/null 2>&1; then
+        k=$(ssh-keyscan -T 3 -p "${SSH_PORT:-22}" 127.0.0.1 2>/dev/null | awk '!/^#/ && NF >= 3 { print $2 " " $3 }')
+        [ -n "$k" ] && { echo "$k"; return; }
+    fi
+    # else the key files the running server was told to use (CFWs often keep them on the data partition, while
+    # /etc/ssh holds the image's defaults), then the usual places
+    {
+        for p in $(pidof sshd dropbear 2>/dev/null); do
+            tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | awk 'f { print; f = 0 } $0 == "-h" || $0 == "-r" { f = 1 }'
+        done
+        for c in /etc/ssh/sshd_config /storage/.cache/ssh/sshd_config; do
+            [ -f "$c" ] && awk 'tolower($1) == "hostkey" { print $2 }' "$c"
+        done
+        ls /etc/ssh/ssh_host_*_key /storage/.cache/ssh/ssh_host_*_key /storage/.ssh/ssh_host_*_key \
+           /userdata/system/ssh/ssh_host_*_key /userdata/system/.ssh/ssh_host_*_key \
+           /etc/dropbear/dropbear_*_host_key /storage/.cache/dropbear/dropbear_*_host_key 2>/dev/null
+    } | sort -u | while read -r f; do [ -f "$f" ] && pubkey_of "$f"; done
 }
 
 device_id() {   # random, made once per SD card; kept in the SSH user's home so reinstalling the port keeps it
