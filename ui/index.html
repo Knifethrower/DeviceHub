@@ -194,6 +194,7 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
   <span class="spacer"></span>
   <button id="awaybtn" class="small" title="Away mode: sessions' requests for a free device are approved at once, without asking you">Away mode</button>
   <button id="notifbtn" class="small" title="Browser notifications from this page, used only when Windows notifications are off in Settings">Notify me</button>
+  <button id="agentsbtn" class="small" title="tokens for AI agents on other machines">Agents</button>
   <button id="settingsbtn" class="small">Settings</button>
   <button id="installbtn" class="small" title="install one port zip on every online device at once">Install on all…</button>
   <button id="addbtn" class="primary small">Add device</button>
@@ -290,6 +291,11 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
 <dialog id="bcndlg"><form method="dialog">
   <div class="dh"><h2>Add a device</h2><span class="spacer"></span><button type="button" class="small" data-close>Close</button></div>
   <div class="db" id="bcnbody"></div>
+</form></dialog>
+
+<dialog id="agdlg"><form method="dialog">
+  <div class="dh"><h2>Agents</h2><span class="spacer"></span><button type="button" class="small" data-close>Close</button></div>
+  <div class="db" id="agbody"></div>
 </form></dialog>
 
 <div id="snack"></div>
@@ -1532,6 +1538,91 @@ $("#bcnbody").addEventListener("click", async e => {
   await act(api("POST", "/api/beacon/rotate", {}), "New beacon key: download the port again");
 });
 $("#logoutbtn").onclick = async () => { await fetch("/logout", { method: "POST", headers: { "X-DevHub-Token": TOKEN } }); location.href = "/login"; };
+
+// ------------------------------------------------------------ agents: tokens for agents on other machines
+let agNew = null;   // the token just made: shown once
+async function renderAgents() {
+  const j = await api("GET", "/api/agents");
+  const base = (S && S.server && S.server.public_url) || location.origin;
+  const rows = (j.agents || []).map(a => `<tr><td><b>${esc(a.name)}</b><span class="sub mono">dh_${esc(a.id)}_…</span></td>
+      <td><span class="sub">made ${new Date(a.created * 1000).toLocaleDateString()}${a.used ? " · last used " + (S.now - a.used < 120 ? "just now" : mins(S.now - a.used) + " ago") : " · never used"}</span></td>
+      <td class="opt"><button type="button" class="small danger" data-agdel="${esc(a.id)}">Revoke</button></td></tr>`).join("");
+  const setup = agNew ? agentMessage(base, agNew) : "";
+  $("#agbody").innerHTML = `<p>An agent on another machine (another Claude Code, Codex, a script) uses DeviceHub with the <span class="mono">devhub</span>
+      command and these settings; <span class="mono">devhub run</span>, <span class="mono">push</span> and <span class="mono">pull</span> then go through this hub.
+      Each agent gets its own token, so you can see and revoke it. Agents can never approve, change settings or act as you.</p>
+    ${agNew ? `<div class="alert ask" style="display:block"><b>${esc(agNew.name)}</b>: give the agent one of these now; the token isn't shown again.
+      <pre class="log" style="margin:8px 0;white-space:pre-wrap;word-break:break-all;max-height:260px">${esc(setup)}</pre>
+      <button type="button" class="small primary" id="agcopy">Copy the message</button>
+      <button type="button" class="small" id="agskill" title="for Claude Code: save as ~/.claude/skills/devicehub/SKILL.md (it holds the token)">Download Claude Code skill</button></div>` : ""}
+    <p style="display:flex;gap:8px;flex-wrap:wrap"><input id="agname" type="text" placeholder="agent name, e.g. Claude on my laptop" style="flex:1;min-width:200px;padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel2)">
+      <button type="button" class="small primary" id="agmake">Make a token</button></p>
+    ${rows ? `<div class="tablewrap"><table class="ports"><tbody>${rows}</tbody></table></div>` : `<div class="sub">No agent tokens yet.</div>`}
+    <p class="sub">On this machine, agents can keep using DeviceHub without a token.</p>`;
+  $("#agbody")._setup = setup;
+}
+// what to tell an agent on another machine: get the devhub command from this hub, set three variables, follow the rules
+function agentMessage(base, ag) {
+  return `You can use our handheld test devices (PortMaster ports, CFWs) through DeviceHub at ${base}.
+
+Set up once on your machine:
+  mkdir -p ~/.local/bin && curl -fsSL ${base}/devhub.py -o ~/.local/bin/devhub && chmod +x ~/.local/bin/devhub
+Every devhub command needs these in its environment (for Claude Code: add them under "env" in ~/.claude/settings.json; export them in your shell for this session too):
+  DEVHUB_URL=${base}
+  DEVHUB_TOKEN=${ag.token}
+  DEVHUB_NAME="${ag.name}"
+Optional, for Claude Code: devhub install-hooks (lock checks and approvals arrive in the conversation).
+
+Then read the rules with: devhub agent-guide
+and follow them: use devhub for every device (status, acquire, run, push, pull, install, shot, release), take a device's lock before changing anything on it, never open your own SSH connection to a device, and release it clean (front end running) when you're done.`;
+}
+async function agentSkill(base, ag) {
+  let guide = "";
+  try { guide = await (await fetch("/agent-guide.md")).text(); } catch (e) { guide = "Run `devhub agent-guide` for the rules."; }
+  const md = `---
+name: devicehub
+description: Use the handheld test devices (PortMaster ports, CFWs like Knulli, ROCKNIX, muOS) through DeviceHub at ${base}. Use it whenever a task needs a real handheld - testing a port, PortMaster's GUI or a CFW: check devices, take a device's lock, run commands, copy files, install ports, take screenshots.
+---
+
+# DeviceHub at ${base}
+
+## Setup (once per machine)
+
+1. The command: \`mkdir -p ~/.local/bin && curl -fsSL ${base}/devhub.py -o ~/.local/bin/devhub && chmod +x ~/.local/bin/devhub\`
+2. Every devhub command needs these variables (put them under "env" in ~/.claude/settings.json; if they aren't set
+   yet in this session, prefix the commands with them):
+   \`\`\`
+   DEVHUB_URL=${base}
+   DEVHUB_TOKEN=${ag.token}
+   DEVHUB_NAME="${ag.name}"
+   \`\`\`
+3. Check: \`devhub status\` lists the devices. Optional: \`devhub install-hooks\` (lock checks arrive in the conversation).
+
+${guide.includes("## Who you are") ? guide.slice(guide.indexOf("## Who you are")) : guide}`;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([md], { type: "text/markdown" }));
+  a.download = "SKILL.md"; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+$("#agentsbtn").onclick = () => { agNew = null; renderAgents(); $("#agdlg").showModal(); };
+$("#agdlg").addEventListener("close", () => { agNew = null; });
+$("#agbody").addEventListener("click", async e => {
+  if (e.target.id === "agmake") {
+    const name = $("#agname").value.trim();
+    if (!name) return snack("give the agent a name", true);
+    const j = await api("POST", "/api/agents", { name });
+    if (j.ok === false) return snack(j.error || "failed", true);
+    agNew = { name, token: j.token }; renderAgents();
+  } else if (e.target.id === "agcopy") {
+    copy($("#agbody")._setup);
+  } else if (e.target.id === "agskill") {
+    agentSkill((S && S.server && S.server.public_url) || location.origin, agNew);
+  } else if (e.target.dataset.agdel) {
+    if (!confirm("Revoke this token? That agent can't use DeviceHub any more (locks it holds stay until released).")) return;
+    await act(api("DELETE", `/api/agents/${e.target.dataset.agdel}`, {}), "Revoked");
+    renderAgents();
+  }
+});
 
 // ------------------------------------------------------------ settings
 const SETTINGS = [

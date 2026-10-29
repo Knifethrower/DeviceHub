@@ -66,8 +66,12 @@ because you ran the port since it booted. When it stops announcing, its card goe
 
 - The page needs the login; only a logged-in page acts as the user (approving devices and agents' requests, Away
   mode, settings).
-- Agents use the API token from `data/token` (`X-DevHub-Token`), exactly as with local DeviceHub. They need to run on
-  the server for `devhub run` (shared SSH sockets); remote agents are the next step.
+- Agents on other machines get their own token from the page (**Agents**), which also gives the message to paste to
+  the agent, or a Claude Code skill (`SKILL.md`) with the setup and rules filled in. The agent downloads the `devhub`
+  command from the hub (`/devhub.py`) and sets `DEVHUB_URL`, `DEVHUB_TOKEN` and `DEVHUB_NAME`; `devhub run`, `push`
+  and `pull` then go through the hub (`/api/devices/<dev>/exec` and `/file`), which runs them over the device's
+  shared connection with the usual lock rules. Agent tokens can never act as the user or stop the hub, and can be
+  revoked. Agents on the server itself can keep using `data/token`.
 - Keep it on your LAN (or tailnet): don't publish it to the internet.
 
 ## Tests

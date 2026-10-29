@@ -19,6 +19,19 @@ DeviceHub shows the user who holds each device, so it needs a stable name for yo
   ```
   If you cannot keep variables between commands, put `--as "<name>"` on every devhub command instead.
 
+## On another machine
+
+A DeviceHub server (on your LAN) works the same from any machine. Its page (Agents) gives each agent a token and the
+setup: the `devhub` command downloaded from the hub (`<hub>/devhub.py`, one file, Python 3 only) and three variables
+in the environment of every devhub command:
+
+```
+DEVHUB_URL=http://<hub>:8765      DEVHUB_TOKEN=dh_...      DEVHUB_NAME="what you are working on"
+```
+
+Then `devhub run`, `push` and `pull` go through the hub, which runs them over the device's shared connection (the
+same lock rules; everything shows in the device's Console). `devhub env` needs DeviceHub on your own machine.
+
 ## The rules
 
 1. **Every change on a device needs its lock**: launching or killing programs, stopping the front end, copying or

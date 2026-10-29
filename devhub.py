@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """devhub: command line for DeviceHub (device locks, shared SSH connections, status).
 
-Runs on Windows (Git Bash / PowerShell) or in WSL. Talks to the DeviceHub server on 127.0.0.1:8765.
+Runs on Windows (Git Bash / PowerShell) or in WSL. Talks to the DeviceHub server on 127.0.0.1:8765, or to a DeviceHub
+on another machine (server mode): DEVHUB_URL=http://hub:8765 and DEVHUB_TOKEN=<an agent token from its web page>.
+Then run/push/pull go through the hub, which runs them over the device's shared connection.
 
   devhub status [DEV]                          devices, connections, locks
   devhub acquire DEV "purpose" [--for 30m] [--wait 20m [--need "why this device"]] [--watch NAME]
@@ -36,6 +38,31 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.environ.get("DEVHUB_DATA") or os.path.join(HERE, "data")
 PORT = int(os.environ.get("DEVHUB_PORT") or 8765)
 IS_WIN = os.name == "nt"
+REMOTE = (os.environ.get("DEVHUB_URL") or "").rstrip("/")     # a DeviceHub on another machine
+
+
+def hub_conn(timeout):
+    import http.client
+    import urllib.parse
+    if not REMOTE:
+        return http.client.HTTPConnection("127.0.0.1", PORT, timeout=timeout)
+    u = urllib.parse.urlsplit(REMOTE)
+    if u.scheme == "https":
+        return http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout)
+    return http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+
+
+def hub_token():
+    if REMOTE:
+        tok = os.environ.get("DEVHUB_TOKEN") or ""
+        if not tok:
+            raise HubDown("DEVHUB_URL is set but DEVHUB_TOKEN isn't (make an agent token on the hub's page: Agents)")
+        return tok
+    try:
+        with open(os.path.join(DATA, "token")) as f:
+            return f.read().strip()
+    except OSError:
+        raise HubDown("no token file in %s: DeviceHub has never run with this data folder" % DATA)
 
 
 class HubDown(Exception):
@@ -44,12 +71,8 @@ class HubDown(Exception):
 
 def call(method, path, body=None, timeout=60):
     import http.client
-    try:
-        with open(os.path.join(DATA, "token")) as f:
-            tok = f.read().strip()
-    except OSError:
-        raise HubDown("no token file in %s: DeviceHub has never run with this data folder" % DATA)
-    c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=timeout)
+    tok = hub_token()
+    c = hub_conn(timeout)
     try:
         c.request(method, path, body=json.dumps(body).encode() if body is not None else None,
                   headers={"X-DevHub-Token": tok, "Content-Type": "application/json"})
@@ -336,6 +359,8 @@ def c_run(a):
         print("nothing to run: devhub run DEV -- COMMAND", file=sys.stderr)
         return 2
     remote = " ".join(cmd)
+    if REMOTE:
+        return remote_run(a, remote)
     conn = authorize(a, a.ro, remote)
     if not conn:
         return 1
@@ -358,6 +383,102 @@ def c_run(a):
     except HubDown:
         pass
     return rc
+
+
+def remote_run(a, remote):
+    """run through a DeviceHub on another machine: it runs the command over the shared connection and streams the
+    output back (application/x-ndjson: {"s": "o"|"e", "d": base64} lines, then {"rc": N})."""
+    import base64
+    import http.client
+    body = dict(ident(a), cmd=remote, ro=bool(a.ro), timeout=a.timeout or 0)
+    c = hub_conn(None)
+    try:
+        c.request("POST", "/api/devices/%s/exec" % a.dev, body=json.dumps(body).encode(),
+                  headers={"X-DevHub-Token": hub_token(), "Content-Type": "application/json"})
+        r = c.getresponse()
+        if "ndjson" not in (r.getheader("Content-Type") or ""):
+            try:
+                res = json.loads(r.read().decode("utf-8") or "{}")
+            except ValueError:
+                res = {"ok": False, "error": "HTTP %d" % r.status}
+            res["ok"] = False
+            return finish(res)
+        rc = 255
+        for line in r:
+            m = json.loads(line)
+            if "s" in m:
+                dst = sys.stdout if m["s"] == "o" else sys.stderr
+                dst.buffer.write(base64.b64decode(m["d"]))
+                dst.flush()
+            elif "rc" in m:
+                rc = m["rc"]
+            else:
+                notices(m)
+        return rc
+    except (OSError, http.client.HTTPException) as e:
+        raise HubDown(str(e))
+    finally:
+        c.close()
+
+
+def id_headers(a):
+    import urllib.parse
+    b = ident(a)
+    return {"X-DevHub-Session": b.get("session") or "", "X-DevHub-Name": urllib.parse.quote(b.get("name") or "")}
+
+
+def remote_push(a):
+    import http.client
+    import urllib.parse
+    size = os.path.getsize(a.local)
+    try:
+        c = hub_conn(600)
+        c.putrequest("PUT", "/api/devices/%s/file?path=%s" % (a.dev, urllib.parse.quote(a.remote)))
+        for k, v in dict(id_headers(a), **{"X-DevHub-Token": hub_token(), "Content-Length": str(size),
+                                           "Content-Type": "application/octet-stream"}).items():
+            c.putheader(k, v)
+        c.endheaders()
+        with open(a.local, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                c.send(chunk)
+        r = c.getresponse()
+        res = json.loads(r.read().decode("utf-8") or "{}")
+    except (OSError, http.client.HTTPException) as e:
+        raise HubDown(str(e))
+    if not res.get("ok"):
+        return finish(res)
+    notices(res)
+    print("%s -> %s:%s (%d bytes)" % (a.local, a.dev, a.remote, size))
+    return 0
+
+
+def remote_pull(a):
+    import http.client
+    import urllib.parse
+    tmp = a.local + ".devhub-part"
+    try:
+        c = hub_conn(600)
+        c.request("GET", "/api/devices/%s/file?path=%s" % (a.dev, urllib.parse.quote(a.remote)),
+                  headers=dict(id_headers(a), **{"X-DevHub-Token": hub_token()}))
+        r = c.getresponse()
+        if r.getheader("Content-Type") != "application/octet-stream":
+            res = json.loads(r.read().decode("utf-8") or "{}")
+            res["ok"] = False
+            return finish(res)
+        want, got = int(r.getheader("Content-Length") or -1), 0
+        with open(tmp, "wb") as f:
+            for chunk in iter(lambda: r.read(1 << 20), b""):
+                f.write(chunk)
+                got += len(chunk)
+    except (OSError, http.client.HTTPException) as e:
+        raise HubDown(str(e))
+    if got != want:
+        os.unlink(tmp)
+        print("%s:%s: copy cut short (%d of %d bytes)" % (a.dev, a.remote, got, want), file=sys.stderr)
+        return 1
+    os.replace(tmp, a.local)
+    print("%s:%s -> %s (%d bytes)" % (a.dev, a.remote, a.local, got))
+    return 0
 
 
 class ConsoleFeed:
@@ -412,6 +533,8 @@ def c_push(a):
     if not os.path.isfile(a.local):
         print("no such file: %s" % a.local, file=sys.stderr)
         return 2
+    if REMOTE:
+        return remote_push(a)
     conn = authorize(a, False, "push %s -> %s" % (os.path.basename(a.local), a.remote))
     if not conn:
         return 1
@@ -426,6 +549,8 @@ def c_push(a):
 def c_pull(a):
     import subprocess
     a.local = local_path(a.local)
+    if REMOTE:
+        return remote_pull(a)
     conn = authorize(a, True)
     if not conn:
         return 1
@@ -444,10 +569,9 @@ def upload(dev, path):
     """Stream a zip to the hub (no size limit, no JSON wrapping); returns the hub's preview."""
     import http.client
     import urllib.parse
+    tok = hub_token()
     try:
-        with open(os.path.join(DATA, "token")) as f:
-            tok = f.read().strip()
-        c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=600)
+        c = hub_conn(600)
         c.putrequest("POST", "/api/devices/%s/upload?name=%s" % (dev, urllib.parse.quote(os.path.basename(path))))
         c.putheader("X-DevHub-Token", tok)
         c.putheader("Content-Type", "application/zip")
@@ -577,6 +701,19 @@ def c_shot(a):
     if not r.get("ok"):
         return finish(r)
     notices(r)
+    if REMOTE:     # fetch it from the hub
+        out = local_path(a.out) if a.out else r["file"]
+        c = hub_conn(60)
+        c.request("GET", "/shots/" + r["file"], headers={"X-DevHub-Token": hub_token()})
+        resp = c.getresponse()
+        data = resp.read()
+        if resp.status != 200:
+            print("could not fetch the screenshot (HTTP %d)" % resp.status, file=sys.stderr)
+            return 1
+        with open(out, "wb") as f:
+            f.write(data)
+        print("%s (%dx%d)" % (out, r["w"], r["h"]))
+        return 0
     p = os.path.join(DATA, "shots", r["file"])
     if a.out:
         shutil.copyfile(p, local_path(a.out))
@@ -586,6 +723,10 @@ def c_shot(a):
 
 
 def c_env(a):
+    if REMOTE:
+        print("devhub env needs DeviceHub on this machine (its shared SSH sockets); with a remote hub use "
+              "devhub run / push / pull", file=sys.stderr)
+        return 2
     conn = authorize(a, True)
     if not conn:
         return 1
@@ -623,7 +764,7 @@ def c_whoami(a):
 
 
 def url():
-    return "http://127.0.0.1:%d/" % PORT
+    return REMOTE + "/" if REMOTE else "http://127.0.0.1:%d/" % PORT
 
 
 def c_ui(a):
@@ -636,6 +777,9 @@ def c_ui(a):
 def c_start(a):
     import subprocess
     import time
+    if REMOTE:
+        print("DEVHUB_URL points at %s: start or stop that DeviceHub there" % REMOTE, file=sys.stderr)
+        return 3
     try:
         call("GET", "/api/ping", timeout=3)
         print("DeviceHub already running: " + url(), file=sys.stderr)
@@ -668,6 +812,8 @@ def c_start(a):
 
 
 def c_stop(a):
+    if REMOTE:
+        return c_start(a)     # says to stop it there
     return finish(call("POST", "/api/shutdown", {}))
 
 
@@ -720,8 +866,16 @@ def c_install_hooks(a):
 
 def c_agent_guide(a):
     """Print the agent guide: paste it into an LLM's instructions (AGENTS.md, CLAUDE.md, system prompt)."""
-    with open(os.path.join(HERE, "docs", "AGENTS.md"), encoding="utf-8") as f:
-        sys.stdout.write(f.read())
+    try:
+        with open(os.path.join(HERE, "docs", "AGENTS.md"), encoding="utf-8") as f:
+            sys.stdout.write(f.read())
+        return 0
+    except OSError:
+        if not REMOTE:
+            raise
+    c = hub_conn(30)      # devhub downloaded on its own (from the hub): the hub has the guide
+    c.request("GET", "/agent-guide.md")
+    sys.stdout.write(c.getresponse().read().decode("utf-8", "replace"))
     return 0
 
 
@@ -816,6 +970,9 @@ def main(argv):
     try:
         return a.fn(a)
     except HubDown as e:
+        if REMOTE:
+            print("DeviceHub at %s is not reachable (%s)" % (REMOTE, e), file=sys.stderr)
+            return 3
         if a.fn in (c_start, c_stop) or os.environ.get("DEVHUB_NO_AUTOSTART"):
             print("DeviceHub is not running (%s). Start it: devhub start" % e, file=sys.stderr)
             return 3
