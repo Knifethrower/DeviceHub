@@ -1126,9 +1126,14 @@ def battery_watch(dev, d, st):
 def shutdown_device(dev, d, why, notify=True):
     """Clean power-off: stop the front end (it saves its settings and game lists), sync, power off. Runs detached
     on the device so the SSH call returns before the network goes down."""
+    # /sbin is often missing from a non-root PATH, and some sudoers (dArkOS: !secure_path) keep the caller's PATH
     off = "poweroff" if d["user"] == "root" else "sudo -n poweroff"
     steps = ([d["fe_stop"]] if d.get("fe_stop") else []) + ["sync", off]
-    cmd = "nohup sh -c %s >/dev/null 2>&1 &" % shlex.quote("sleep 1; " + "; ".join(steps))
+    # checked before detaching, so a missing poweroff or a sudo that wants a password is reported, not swallowed
+    check = "command -v poweroff >/dev/null || { echo 'poweroff not found' >&2; exit 1; }; " + \
+            ("" if d["user"] == "root" else "sudo -n true 2>/dev/null || { echo 'sudo needs a password' >&2; exit 1; }; ")
+    cmd = "export PATH=\"$PATH:/usr/sbin:/sbin\"; %snohup sh -c %s >/dev/null 2>&1 &" % (
+        check, shlex.quote("sleep 1; " + "; ".join(steps)))
     try:
         rc, out, err = ssh_run(d, cmd, timeout=30)
     except subprocess.TimeoutExpired:
