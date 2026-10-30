@@ -2461,7 +2461,8 @@ const SETTINGS = [
   ["battery_shutdown_pct", "Off the charger: shut the device down cleanly at this battery level (%, 0 = off)", "number"],
   ["toasts", "Windows notifications (WSL only) when no DeviceHub page with notifications on is open (otherwise the page notifies)", "checkbox"],
   ["notify_cmd", "Notification command (optional, any platform; gets DEVHUB_TITLE, DEVHUB_TEXT, DEVHUB_URL, DEVHUB_KIND), e.g. notify-send \"$DEVHUB_TITLE\" \"$DEVHUB_TEXT\"", "text"],
-  ["install_serve", "Install on all: each device downloads the zip from DeviceHub over HTTP, md5 checked (off: DeviceHub copies it to every device over SSH; needs the devices to reach this machine, so off under WSL)", "checkbox"],
+  ["install_serve", "Send files over HTTP: devices download installs, runtimes and devhub push files from DeviceHub (checked; SSH again if a download fails). Off: DeviceHub copies them over SSH. Under WSL a small Windows Python server sends them (Windows Firewall may ask once)", "checkbox"],
+  ["win_python", "Windows python.exe for HTTP transfers under WSL (empty: the one on the Windows PATH)", "text"],
   ["retrocatalog", "Device types from Retro Catalog (retrocatalog.com): the editor reads its model list and a model's spec page when you pick it", "checkbox"],
 ];
 function settingsList() {

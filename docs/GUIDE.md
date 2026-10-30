@@ -74,12 +74,16 @@ agents see [AGENTS.md](AGENTS.md).
   check the download.
 - **PortMaster itself**: PortMaster's release zip (`PortMaster.zip`) installs like a port, on one device or on all:
   harbourmaster updates PortMaster in place, as its own updater does.
-- **Install on all…** (top bar): one zip, uploaded once, installed on every device you tick, in parallel. Each
-  device's harbourmaster downloads it from DeviceHub over HTTP (`?md5=` checked) instead of DeviceHub copying it to
-  each over SSH: a hub on the LAN (server mode) serves it on its own port, a local one starts a file server on
-  `DEVHUB_FILE_PORT` (8766) while the installs run. Settings > *Install on all: each device downloads…* switches back
-  to copying (the default under WSL, whose network the devices can't reach). Runtimes (`.squashfs`) are always copied. The list
+- **Install on all…** (top bar): one zip, uploaded once, installed on every device you tick, in parallel. The list
   says why a device can't take it; devices an agent holds are unticked. One notification sums up the run.
+- **Sending files over HTTP** (Settings > *Send files over HTTP*): instead of DeviceHub copying files over SSH, the
+  devices download them from DeviceHub, which is usually much faster on Wi-Fi. This covers every file sent to a
+  device: *Install port…*, *Install on all…* (harbourmaster fetches the zip itself, `?md5=` checked), runtimes and
+  `devhub push` (SHA-1 checked; a failed download falls back to SSH). A hub on the LAN (server mode) serves the files
+  on its own port; a local one starts a file server on `DEVHUB_FILE_PORT` (8766) only while files are being sent.
+  Under WSL, whose network the devices can't reach, that server runs in Windows Python at the PC's LAN address
+  (`winserve.py`; *Windows python.exe* in Settings if it isn't on the Windows PATH). Windows Firewall may ask once to
+  allow Python on private networks. On by default on Linux, off under WSL. `devhub pull` always copies over SSH.
 - **Installed ports** (card button, or `devhub ports DEV`): read-only list from each port's `port.json`, plus
   launchers PortMaster does not manage and installed runtimes. The *Log* column opens a port's log files in the
   Console, following them live.

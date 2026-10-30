@@ -535,6 +535,16 @@ def c_push(a):
         return 2
     if REMOTE:
         return remote_push(a)
+    size = os.path.getsize(a.local)
+    r = call("POST", "/api/devices/%s/push" % a.dev, dict(ident(a), path=os.path.abspath(a.local), remote=a.remote),
+             timeout=max(300, size // 300000 + 300))
+    if r.get("status") != "ssh" and "no such endpoint" not in str(r.get("error")):   # HTTP transfers on
+        notices(r)
+        for line in r.get("log") or []:
+            print("  " + line, file=sys.stderr)
+        print("%s -> %s:%s (%d bytes)%s" % (a.local, a.dev, a.remote, size, "" if r.get("ok") else
+                                            " FAILED: " + str(r.get("msg") or r.get("error"))))
+        return 0 if r.get("ok") else 1
     conn = authorize(a, False, "push %s -> %s" % (os.path.basename(a.local), a.remote))
     if not conn:
         return 1

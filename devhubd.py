@@ -67,9 +67,11 @@ DEFAULT_SETTINGS = {
     "away_mode": False,            # the user's Away mode: sessions' requests for a free device are approved at once
     "notify_cmd": "",              # shell command for notifications (env DEVHUB_TITLE/TEXT/URL/KIND), any platform
     "retrocatalog": False,         # device type list + specs from retrocatalog.com (reads its public pages on demand)
-    # Install on all: each device's harbourmaster downloads the zip from DeviceHub over HTTP (with an md5 check) instead
-    # of DeviceHub copying it to every device over SSH. Off under WSL, whose network LAN devices can't reach.
+    # Files to devices over HTTP: they download from DeviceHub instead of DeviceHub copying over SSH (install on all:
+    # harbourmaster fetches with an md5 check; installs, runtimes and `devhub push`: SHA-1 checked, SSH if it fails).
+    # Under WSL Windows Python serves them (winserve.py), so off there until switched on.
     "install_serve": PLATFORM != "wsl",
+    "win_python": "",              # WSL: Windows python.exe for winserve.py ("" = found on the Windows PATH)
 }
 
 # Defaults filled in when a CFW is picked in the editor (every field stays editable).
@@ -2485,27 +2487,64 @@ def ssh_args(d, cmd):
 
 
 def push_file(d, local, remote, sha1, job):
-    """Stream a file over the shared connection to <remote> (folder created, sudo when needed), SHA-1 checked."""
+    """Copy a file to <remote> (folder created, sudo when needed), SHA-1 checked. Over the shared connection, or with
+    the setting install_serve the device downloads it from DeviceHub over HTTP (SSH again if that fails)."""
+    tok = None
+    if H.settings.get("install_serve"):
+        try:
+            tok = serve_add(local, os.path.basename(remote), own=False)
+            url = serve_url(tok, d)
+        except (JobError, OSError) as e:
+            job_log(job, "HTTP transfer not possible (%s): copying over SSH" % e)
+            if tok:
+                serve_drop(tok)
+            tok = None
+    try:
+        return push_file_via(d, local, remote, sha1, job, url if tok else None)
+    finally:
+        if tok:
+            serve_drop(tok)
+
+
+def push_file_via(d, local, remote, sha1, job, url):
     part = remote + ".part"
+    prep = 'P=%s; S=""; D="$(dirname "$P")"; [ "$(id -u)" = 0 ] || [ -w "$(dirname "$D")" ] || S="sudo -n"; $S mkdir -p "$D" && '
     # the command travels in the ssh command line, so stdin carries nothing but the file
-    cmd = ('P=%s; S=""; D="$(dirname "$P")"; [ "$(id -u)" = 0 ] || [ -w "$(dirname "$D")" ] || S="sudo -n"; '
-           '$S mkdir -p "$D" && exec $S sh -c \'cat > "$1"\' sh "$P"') % shlex.quote(part)
+    cmd = (prep + 'exec $S sh -c \'cat > "$1"\' sh "$P"') % shlex.quote(part)
+    size = os.path.getsize(local)
     for attempt in (1, 2):
         job["sent"] = 0
-        p = subprocess.Popen(ssh_args(d, cmd), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        try:
-            with open(local, "rb") as f:
-                while True:
-                    chunk = f.read(1 << 20)
-                    if not chunk:
-                        break
-                    p.stdin.write(chunk)
-                    job["sent"] += len(chunk)
-            p.stdin.close()
-        except BrokenPipeError:
-            pass
-        rc = p.wait()
-        err = p.stderr.read().decode("utf-8", "replace").strip()
+        if url:     # the device downloads it (curl, else busybox wget); slow Wi-Fi: allow ~300 KB/s
+            job["step"] = "the device downloads it over HTTP"
+            fetch = (prep + 'exec $S sh -c \'curl -fsS -o "$1" "$2" 2>&1 || wget -q -O "$1" "$2"\' sh "$P" %s') % (
+                shlex.quote(part), shlex.quote(url))
+            try:
+                rc, _, errb = ssh_run(d, fetch, timeout=max(120, size // 300000 + 60))
+                err = errb.decode("utf-8", "replace").strip()
+            except subprocess.TimeoutExpired:
+                rc, err = -1, "timed out"
+            if rc == 0:
+                job["sent"] = size
+                job_log(job, "downloaded over HTTP from DeviceHub (%s)" % url.split("/dl/")[0])
+            else:
+                job_log(job, "HTTP download failed (%s): copying over SSH instead" % (err[-160:] or "exit %d" % rc))
+                url = None
+                job["step"] = "sending"
+        if not url:
+            p = subprocess.Popen(ssh_args(d, cmd), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            try:
+                with open(local, "rb") as f:
+                    while True:
+                        chunk = f.read(1 << 20)
+                        if not chunk:
+                            break
+                        p.stdin.write(chunk)
+                        job["sent"] += len(chunk)
+                p.stdin.close()
+            except BrokenPipeError:
+                pass
+            rc = p.wait()
+            err = p.stderr.read().decode("utf-8", "replace").strip()
         if rc == 0:
             check = remote_sh('(sha1sum < "$P" 2>/dev/null || echo none) | cut -c1-40; wc -c < "$P"', P=part)
             # hashing a multi-GB zip on a slow handheld (RG351P: A35 cores, SD card) takes minutes: allow ~3 MB/s
@@ -4354,6 +4393,33 @@ def r_file_put(h, q, dev):
     ok, res = granted(dict(ident, dev=dev, ro=False, cmd="push %s (%d bytes)" % (path, n)))
     if not ok:
         return ("application/json", json.dumps(res).encode())
+    if H.settings.get("install_serve"):     # HTTP transfers: spool it here, then the device downloads it
+        os.makedirs(UPLOADS, exist_ok=True)
+        tmp, sha, got = os.path.join(UPLOADS, "push-%s" % secrets.token_hex(8)), hashlib.sha1(), 0
+        try:
+            with open(tmp, "wb") as f:
+                while got < n:
+                    chunk = h.rfile.read(min(1 << 20, n - got))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    sha.update(chunk)
+                    got += len(chunk)
+            if got != n:
+                return ("application/json", json.dumps({"ok": False, "msg": "copy to %s failed (got %d of %d bytes)"
+                                                                            % (path, got, n)}).encode())
+            job = {"log": []}
+            try:
+                push_file(d, tmp, path, sha.hexdigest(), job)
+            except JobError as e:
+                return ("application/json", json.dumps({"ok": False, "msg": "copy to %s failed: %s" % (path, e)}).encode())
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        console_append(dev, caller(ident)["name"], [["cmd", "pushed %s (%d bytes, HTTP)" % (path, n)]])
+        return {"ok": True, "bytes": n, "notices": res.get("notices") or []}
     part = path + ".devhub-part"
     p = subprocess.Popen(ssh_args(d, "cat > %s && n=$(wc -c < %s) && [ \"$n\" -eq %d ] && mv -f %s %s" % (
         remote_q(part), remote_q(part), n, remote_q(part), remote_q(path))), stdin=subprocess.PIPE,
@@ -4421,16 +4487,21 @@ H.serves = {}       # token -> {"path", "name", "md5", "size"}
 H.file_srv = None
 
 
-def serve_add(path, name):
+def serve_add(path, name, own=True):
+    """Serve <path> as <name> until serve_drop(); own=True: the served file is deleted then."""
     md5 = hashlib.md5()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             md5.update(chunk)
     tok = secrets.token_hex(16)
     with H.lock:
-        H.serves[tok] = {"path": path, "name": name, "md5": md5.hexdigest(), "size": os.path.getsize(path)}
+        H.serves[tok] = {"path": path, "name": name, "md5": md5.hexdigest(), "size": os.path.getsize(path), "own": own}
     if BIND in ("127.0.0.1", "localhost", "::1"):
-        file_server(True)
+        try:
+            file_server(True)
+        except JobError:
+            serve_drop(tok)
+            raise
     return tok
 
 
@@ -4438,17 +4509,32 @@ def serve_drop(tok):
     with H.lock:
         e = H.serves.pop(tok, None)
         idle = not H.serves
-    if e:
+    if e and e.get("own", True):
         try:
             os.unlink(e["path"])
         except OSError:
             pass
+    if PLATFORM == "wsl":
+        win_manifest()
     if idle:
         file_server(False)
 
 
 def local_ip_for(host):
     """This machine's address on the way to the device (what the device should download from)."""
+    if PLATFORM == "wsl" and H.file_srv:        # the Windows side serves: its LAN address, not WSL's NAT one
+        hit = H.win_ips.get(host)
+        if hit and now() - hit[1] < 600:
+            return hit[0]
+        try:
+            ip = subprocess.run([win_python(), wslpath_w(os.path.join(HERE, "winserve.py")), "--ip-for", host],
+                                capture_output=True, text=True, timeout=20).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            ip = ""
+        if not re.fullmatch(r"[\d.]+", ip):
+            raise JobError("can't tell which of this PC's addresses %s would reach" % host)
+        H.win_ips[host] = (ip, now())
+        return ip
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect((host, 9))
@@ -4460,9 +4546,66 @@ def local_ip_for(host):
 def serve_url(tok, d):
     e = H.serves.get(tok)
     if not e:
-        raise JobError("the file to install is gone (the install-all run ended)")
+        raise JobError("the file to send is gone (its transfer ended)")
     port = FILE_PORT if H.file_srv else PORT
     return "http://%s:%d/dl/%s/%s?md5=%s" % (local_ip_for(d["host"]), port, tok, urllib.parse.quote(e["name"]), e["md5"])
+
+
+# Under WSL (NAT networking) the devices can't reach a server inside WSL: Windows Python runs winserve.py, which
+# serves the files listed in data/serves.json at the PC's LAN address and stops by itself when that is empty.
+H.win_ips = {}       # device host -> (this PC's address towards it, when looked up)
+
+
+def wslpath_w(p):
+    return subprocess.run(["wslpath", "-w", p], capture_output=True, text=True, timeout=10).stdout.strip()
+
+
+def win_python():
+    """Windows Python (python.exe on the Windows PATH, not the Microsoft Store alias); setting win_python overrides."""
+    if H.settings.get("win_python"):
+        return H.settings["win_python"]
+    if not getattr(H, "win_py", None):
+        try:
+            out = subprocess.run([POWERSHELL, "-NoProfile", "-Command",
+                                  "(Get-Command python.exe -All | ? Source -notmatch 'WindowsApps' | select -First 1).Source"],
+                                 capture_output=True, text=True, timeout=30, cwd="/mnt/c/").stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            out = ""
+        if not out:
+            raise JobError("no Windows Python found for sending files over HTTP (install it, or set its path in "
+                           "Settings, or switch HTTP transfers off)")
+        H.win_py = subprocess.run(["wslpath", "-u", out], capture_output=True, text=True, timeout=10).stdout.strip()
+    return H.win_py
+
+
+def win_manifest():
+    with H.lock:
+        items = {t: {"path": wslpath_w(e["path"]), "name": e["name"]} for t, e in H.serves.items()}
+    tmp = jpath("serves.json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(items, f)
+    os.replace(tmp, jpath("serves.json"))
+
+
+def win_server_up():
+    p = H.file_srv
+    if p and p.poll() is None:
+        return True
+    H.file_srv = None
+    p = subprocess.Popen([win_python(), wslpath_w(os.path.join(HERE, "winserve.py")), str(FILE_PORT),
+                          wslpath_w(jpath("serves.json"))], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, cwd="/mnt/c/")
+    ready = []
+    t = threading.Thread(target=lambda: ready.append(p.stdout.readline()), daemon=True)
+    t.start()
+    t.join(20)
+    if not (ready and ready[0].startswith(b"LISTENING")):
+        p.kill()
+        err = p.stderr.read().decode("utf-8", "replace").strip().splitlines() if p.poll() is not None else []
+        raise JobError("the Windows file server did not start on port %d%s" % (FILE_PORT, ": " + err[-1][:160] if err else ""))
+    H.file_srv = p
+    log("file server on the Windows side, port %d" % FILE_PORT)
+    return True
 
 
 def send_served(h, tok, name):
@@ -4510,6 +4653,11 @@ class FileHandler(http.server.BaseHTTPRequestHandler):
 
 
 def file_server(on):
+    if PLATFORM == "wsl":       # winserve.py follows the manifest and stops by itself once it is empty
+        if on:
+            win_manifest()
+            win_server_up()
+        return
     with H.lock:
         if on and not H.file_srv:
             try:
@@ -4538,7 +4686,7 @@ def sweep_uploads():
         for uid, u in list(H.uploads.items()):
             if uid not in busy and now() - u["at"] > UPLOAD_KEEP_S:
                 H.uploads.pop(uid, None)
-        keep = {u["path"] for u in H.uploads.values()}
+        keep = {u["path"] for u in H.uploads.values()} | {e["path"] for e in H.serves.values()}   # being sent
     for n in os.listdir(UPLOADS):
         p = os.path.join(UPLOADS, n)
         try:
@@ -5114,6 +5262,36 @@ def r_console_append(body, q, dev):
         raise ApiError(400, "lines must be a list of [stream, text]")
     console_append(dev, c["name"], [l for l in lines if isinstance(l, list) and len(l) == 2])
     return {"ok": True}
+
+
+@route("POST", r"/api/devices/([a-z0-9_-]+)/push")
+def r_push(body, q, dev):
+    """devhub push with HTTP transfers on: the device downloads the file from DeviceHub (status "ssh" = setting off,
+    the CLI copies it itself)."""
+    c = caller(body)
+    d = need_device(dev)
+    if not H.settings.get("install_serve"):
+        return {"ok": False, "status": "ssh"}
+    lk = H.locks.get(dev)
+    if not (lk and same(lk["holder"], c)):
+        return with_notices(c, {"ok": False, "msg": "%s: take the lock first (devhub acquire %s \"purpose\")" % (dname(d), dev)})
+    path, remote = str(body.get("path") or ""), str(body.get("remote") or "")
+    if PLATFORM == "wsl" and re.match(r"^[A-Za-z]:[\\/]", path):
+        path = subprocess.run(["wslpath", "-u", path], capture_output=True, text=True, timeout=10).stdout.strip()
+    if not os.path.isfile(path) or not remote.startswith("/"):
+        raise ApiError(400, "push: a file DeviceHub can read (%s) and an absolute device path" % (path or "no path"))
+    sha = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            sha.update(chunk)
+    job = {"log": []}
+    try:
+        push_file(d, path, remote, sha.hexdigest(), job)
+    except JobError as e:
+        return with_notices(c, {"ok": False, "msg": str(e), "log": job["log"]})
+    lk["last_activity"] = now()
+    event(dev, "cmd", "push %s -> %s" % (os.path.basename(path), remote), c["name"])
+    return with_notices(c, {"ok": True, "log": job["log"]})
 
 
 @route("GET", r"/api/jobs/([0-9a-f]+)")
