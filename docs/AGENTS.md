@@ -47,9 +47,13 @@ same lock rules; everything shows in the device's Console). `devhub env` needs D
 5. **A lock is a lease.** When it runs out DeviceHub asks whether you still need the device. The question shows up
    in the output of your next devhub command (and through the hooks in Claude Code). Answer with
    `devhub renew DEV 30m "why"` or `devhub release DEV`.
-6. **Leave the device clean**: front end running, your program stopped. `release` is refused while the front end is
+6. **Ports are installed, not copied.** A port zip, `PortMaster.zip` or a runtime `.squashfs` goes on with
+   `devhub install`: the device's own PortMaster installs it (folders, port.json, game list, permissions).
+   `devhub push` is for every other file (test builds, configs, data) and refuses port zips and runtimes;
+   never unzip a port by hand or drop it into PortMaster's `autoinstall` folder.
+7. **Leave the device clean**: front end running, your program stopped. `release` is refused while the front end is
    down. `devhub fe DEV restart` fixes that.
-7. Never change DeviceHub's settings, approve your own requests, or switch Away mode: those are the user's, in the
+8. Never change DeviceHub's settings, approve your own requests, or switch Away mode: those are the user's, in the
    web UI only (the API refuses agents).
 
 ## Commands
@@ -65,7 +69,7 @@ devhub release DEV --dirty "why"                      give it back although the 
 
 devhub run DEV -- 'command'                           run over the shared connection (lock needed)
 devhub run DEV --ro -- 'cat /tmp/log.txt'             read-only look, no lock needed
-devhub push DEV local/file /remote/path               copy to the device (lock needed)
+devhub push DEV local/file /remote/path               plain file copy (lock needed; not for port zips)
 devhub pull DEV /remote/path local/file               copy from the device
 devhub install DEV game.zip | runtime.squashfs | URL  install with the device's own PortMaster (lock needed)
 devhub ports DEV                                      installed ports (read-only)

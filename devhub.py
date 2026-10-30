@@ -10,7 +10,8 @@ Then run/push/pull go through the hub, which runs them over the device's shared 
   devhub renew DEV [30m] ["why"] [--watch NAME]  still need it (answers a lock check)
   devhub release DEV [--dirty "why"]           give it back; the front end must be running
   devhub run DEV [--ro] -- COMMAND             run over the shared connection (lock needed unless --ro)
-  devhub push DEV LOCAL REMOTE                 copy a file to the device (lock needed)
+  devhub push DEV LOCAL REMOTE [--force]       copy a file to the device (lock needed); port zips and
+                                               runtimes are refused: use devhub install
   devhub pull DEV REMOTE LOCAL                 copy a file from the device
   devhub install DEV PORT.zip|RUNTIME.squashfs|URL [--refresh ...]  port zip via harbourmaster; .squashfs runtime to
                                                PortMaster/libs; an http(s) URL (.zip or .zip.md5) is downloaded by the device
@@ -527,12 +528,36 @@ class ConsoleFeed:
         self.flush()
 
 
+def port_file_kind(path):
+    """'PortMaster port zip' / 'PortMaster runtime': files `devhub install` handles; None for anything else."""
+    if path.lower().endswith(".squashfs"):
+        return "PortMaster runtime"
+    if not path.lower().endswith(".zip"):
+        return None
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return None
+    if any("/" not in n.rstrip("/") and n.endswith(".sh") for n in names) or \
+            any(n.lower() in ("portmaster/harbourmaster", "portmaster/pugwash") for n in names):
+        return "PortMaster port zip"
+    return None
+
+
 def c_push(a):
     import subprocess
     a.local = local_path(a.local)
     if not os.path.isfile(a.local):
         print("no such file: %s" % a.local, file=sys.stderr)
         return 2
+    kind = port_file_kind(a.local)
+    if kind and not a.force:
+        print("[DeviceHub] %s is a %s: install it with `devhub install %s %s` (PortMaster installs it, as on the "
+              "device). push is a plain file copy; add --force if a copy is really what you want."
+              % (os.path.basename(a.local), kind, a.dev, a.local), file=sys.stderr)
+        return 1
     if REMOTE:
         return remote_push(a)
     size = os.path.getsize(a.local)
@@ -936,10 +961,11 @@ def main(argv):
     s.add_argument("--ro", action="store_true", help="read-only: allowed without the lock")
     s.add_argument("-t", "--timeout", type=int, default=0)
     s.add_argument("command", nargs=argparse.REMAINDER)
-    s = sp("push", c_push, "copy a file to the device")
+    s = sp("push", c_push, "copy a file to the device (port zips and runtimes: devhub install)")
     s.add_argument("dev")
     s.add_argument("local")
     s.add_argument("remote")
+    s.add_argument("--force", action="store_true", help="copy a port zip or runtime as a plain file anyway")
     s = sp("pull", c_pull, "copy a file from the device")
     s.add_argument("dev")
     s.add_argument("remote")

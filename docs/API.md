@@ -56,6 +56,11 @@ DeviceHub machine (inside WSL on Windows). A write (`ro: false`) is refused unle
 `POST /api/activity` with `dev` marks the lock as in use. To show output in the user's Console view, send
 `POST /api/devices/<dev>/console/append` with `lines: [["out", "text"], ["err", "text"], ...]`.
 
+**Files**: `PUT /api/devices/<dev>/file?path=/abs/path` (raw body, lock needed) copies a file; `GET` the same URL
+reads one. With *Send files over HTTP* on, the device downloads it from DeviceHub (SHA-1 checked). A port zip,
+`PortMaster.zip` or runtime `.squashfs` is never copied this way: upload it and install it (below), so the device's
+own PortMaster installs it.
+
 ## Device jobs
 
 | Call | Body | Notes |

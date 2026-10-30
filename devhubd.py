@@ -2460,7 +2460,7 @@ def inspect_squashfs(path, name):
 
 
 def job_public(job, lines=40):
-    v = {k: x for k, x in job.items() if k != "log"}
+    v = {k: x for k, x in job.items() if k not in ("log", "serve_tok", "serve_url")}   # the download link stays private
     v["log"] = job["log"][-lines:]
     return v
 
@@ -2569,6 +2569,20 @@ def push_file_via(d, local, remote, sha1, job, url):
     raise JobError("could not copy %s to the device" % os.path.basename(remote))
 
 
+def serve_one(job, up, d):
+    """A single install with HTTP transfers on: serve the upload for this job (dropped when it ends) and put
+    harbourmaster's URL in job["serve_url"]. False: serving isn't possible, so the zip is copied over SSH."""
+    try:
+        job["serve_tok"] = serve_add(up["path"], up["name"], own=False)
+        job["serve_url"] = serve_url(job["serve_tok"], d)
+        return True
+    except (JobError, OSError) as e:
+        job_log(job, "HTTP transfer not possible (%s): copying over SSH" % e)
+        if job.get("serve_tok"):
+            serve_drop(job.pop("serve_tok"))
+        return False
+
+
 def install_job(job, d, up, refresh, took_lock, who):
     dev = d["id"]
     staged = None
@@ -2619,6 +2633,14 @@ def install_job(job, d, up, refresh, took_lock, who):
             if free and free < need:
                 raise JobError("not enough space: about %d MB needed, %d MB free" % (need // 1024, free // 1024))
             target_z = serve_url(up["serve"], d)
+            job_log(job, "harbourmaster downloads %s from DeviceHub (%s)" % (up["name"], target_z.split("/dl/")[0]))
+            job["step"] = "installing (harbourmaster downloads it from DeviceHub)"
+        elif H.settings.get("install_serve") and serve_one(job, up, d):   # harbourmaster fetches it itself (md5 checked)
+            need = (up["size"] + up["info"].get("uncompressed", 0)) // 1024
+            free = int(info.get("FREE") or 0)
+            if free and free < need:
+                raise JobError("not enough space: about %d MB needed, %d MB free" % (need // 1024, free // 1024))
+            target_z = job["serve_url"]
             job_log(job, "harbourmaster downloads %s from DeviceHub (%s)" % (up["name"], target_z.split("/dl/")[0]))
             job["step"] = "installing (harbourmaster downloads it from DeviceHub)"
         else:
@@ -2689,6 +2711,8 @@ def install_job(job, d, up, refresh, took_lock, who):
         if not job.get("quiet"):
             alert(dev, "Install of %s failed (internal error, see devhubd.log)." % up["name"], kind="install")
     finally:
+        if job.get("serve_tok"):
+            serve_drop(job.pop("serve_tok"))
         if staged:
             try:
                 ssh_run(d, "sh -s", inp=remote_sh('S=""; [ -w "$D" ] || S="sudo -n"; $S rm -rf "$D"',
