@@ -142,8 +142,8 @@ def gate(handler, method, path, q, auth):
         return (302, "text/plain", b"", {"Location": "/login"})
     if auth and not logged_in:
         tok = handler.headers.get("X-DevHub-Token") or (q.get("t") or [""])[0]
-        if not hmac.compare_digest(tok.encode(), D.TOKEN.encode()):
-            raise ApiError(401, "log in, or send the API token (X-DevHub-Token)")
+        if not D.token_ok(tok):     # the master token, or an agent's (which never acts as the user)
+            raise ApiError(401, "log in, or send an API token (X-DevHub-Token)")
     return None
 
 

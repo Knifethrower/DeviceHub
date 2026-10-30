@@ -11,7 +11,7 @@ API never returns them. At rest they are encrypted: with Windows DPAPI (the Wind
 with openssl and a key file only this user can read (data/secret.key) on Linux.
 """
 import base64, errno, hashlib, http.server, json, os, re, secrets, shlex, shutil, signal, socket
-import struct, subprocess, sys, threading, time, traceback, urllib.parse, zipfile, zlib
+import queue, struct, subprocess, sys, threading, time, traceback, urllib.parse, zipfile, zlib
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -95,12 +95,12 @@ CFW_PRESETS = {
     "ArkOS": {"user": "ark", "auth": "password", "ports_dir": "/roms/ports", "smb_share": "roms",
               "fe_proc": "emulationstation", "fe_start": "sudo systemctl start emulationstation",
               "fe_stop": "sudo systemctl stop emulationstation"},
-    # FRONTEND is muOS's own front-end control; /etc/profile puts it on the PATH of a plain SSH command. The start runs
-    # in the background so the SSH command returns. frontend.sh is the front end's loop (the mux* menus come and go
-    # under it); it is gone after FRONTEND stop.
+    # FRONTEND is a shell function in muOS's func.sh (interactive shells have it; a plain SSH command loads it here,
+    # after /etc/profile for the environment it expects). The start runs in the background so the SSH command returns.
+    # frontend.sh is the front end's loop (the mux* menus come and go under it); it is gone after FRONTEND stop.
     "muOS": {"user": "root", "auth": "key", "ports_dir": "", "smb_share": "", "fe_proc": "frontend.sh",
-             "fe_start": "(. /etc/profile >/dev/null 2>&1; FRONTEND start) >/dev/null 2>&1 </dev/null &",
-             "fe_stop": ". /etc/profile >/dev/null 2>&1; FRONTEND stop"},
+             "fe_start": "(. /etc/profile >/dev/null 2>&1; . /opt/muos/script/var/func.sh; FRONTEND start) >/dev/null 2>&1 </dev/null &",
+             "fe_stop": ". /etc/profile >/dev/null 2>&1; . /opt/muos/script/var/func.sh && FRONTEND stop"},
     "Other": {},
 }
 
@@ -1198,12 +1198,12 @@ REQ = threading.local()
 
 
 def caller(body):
-    if body.get("client") == "ui" and not getattr(REQ, "ui", True):
+    if body.get("client") == "ui" and (not getattr(REQ, "ui", True) or getattr(REQ, "agent", None)):
         raise ApiError(403, "log in to DeviceHub to act as the user")
     if body.get("client") == "ui":
         return {"session": None, "name": H.settings.get("user_name") or "user", "ui": True}
     sid = str(body.get("session") or "").strip() or None
-    name = str(body.get("name") or "").strip()[:60]
+    name = str(body.get("name") or "").strip()[:60] or (getattr(REQ, "agent", None) or "")
     if sid:
         s = touch_session(sid, name or None, body.get("transcript"))
         return {"session": sid, "name": s["name"]}
@@ -2896,6 +2896,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if hit and hit[2]:
                 self.close_connection = True   # body may be left unread if we refuse below
             REQ.ui = True
+            REQ.agent = None
             if GATE:
                 res = GATE(self, method, u.path, q, bool(hit and hit[1]))
                 if res:
@@ -2907,7 +2908,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 fn, auth, raw_body, mt = hit
                 if auth and not GATE:
                     tok = self.headers.get("X-DevHub-Token") or (q.get("t") or [""])[0]
-                    if not secrets.compare_digest(tok.encode(), TOKEN.encode()):
+                    if not token_ok(tok):
                         raise ApiError(401, "missing or wrong token")
                 if raw_body:
                     res = fn(self, q, *mt.groups())
@@ -3453,6 +3454,259 @@ def r_shot_delete(body, q, dev, name):
     return {"ok": True, "msg": "deleted %d screenshot%s" % (gone, "" if gone == 1 else "s")}
 
 
+# ---------------------------------------------------------------- agent tokens
+# One token per agent (or per machine), made and revoked by the user in the web page, so agents on other machines
+# don't share the hub's master token (data/token). Stored hashed in data/agents.json; shown once when made. A call
+# with one acts under that agent's name unless it names itself, and can never act as the user.
+H.agents = {}       # id -> {"name", "hash", "created", "used"}
+AGENT_TOKEN_RE = re.compile(r"^dh_([0-9a-f]{8})_([0-9a-f]{40})$")
+
+
+def token_ok(tok):
+    """The master token, or an agent's token (then REQ.agent is that agent's name)."""
+    if tok and secrets.compare_digest(tok.encode(), TOKEN.encode()):
+        return True
+    m = AGENT_TOKEN_RE.match(tok or "")
+    a = H.agents.get(m.group(1)) if m else None
+    if not a or not secrets.compare_digest(hashlib.sha256(m.group(2).encode()).hexdigest(), a["hash"]):
+        return False
+    REQ.agent = a["name"]
+    REQ.ui = False
+    if now() - a.get("used", 0) > 60:
+        a["used"] = now()
+        save_json("agents.json", H.agents)
+    return True
+
+
+def agents_public():
+    return [{"id": k, "name": a["name"], "created": a["created"], "used": a.get("used")} for k, a in H.agents.items()]
+
+
+@route("GET", "/devhub.py", auth=False)
+def r_cli(body, q):
+    """The devhub command itself (one stdlib-only file, no secrets), for agents on other machines."""
+    with open(os.path.join(HERE, "devhub.py"), "rb") as f:
+        return ("text/x-python; charset=utf-8", f.read(), {"Content-Disposition": 'attachment; filename="devhub"'})
+
+
+@route("GET", "/agent-guide.md", auth=False)
+def r_agent_guide(body, q):
+    try:
+        with open(os.path.join(HERE, "docs", "AGENTS.md"), "rb") as f:
+            return ("text/markdown; charset=utf-8", f.read())
+    except OSError:
+        raise ApiError(404, "docs/AGENTS.md is missing next to devhubd.py (an image built without docs/?)")
+
+
+@route("GET", "/api/agents")
+def r_agents(body, q):
+    return {"ok": True, "agents": agents_public()}
+
+
+@route("POST", "/api/agents")
+def r_agent_new(body, q):
+    c = caller(body)
+    if not c.get("ui"):
+        raise ApiError(403, "only the user makes agent tokens (DeviceHub page)")
+    name = re.sub(r"\s+", " ", str(body.get("name") or "")).strip()[:60]
+    if not name:
+        raise ApiError(400, "give the agent a name (what you'll see on its locks)")
+    aid, secret = secrets.token_hex(4), secrets.token_hex(20)
+    with H.lock:
+        H.agents[aid] = {"name": name, "hash": hashlib.sha256(secret.encode()).hexdigest(), "created": now(), "used": 0}
+        save_json("agents.json", H.agents)
+    event(None, "config", "agent token made for %s" % name, c["name"])
+    return {"ok": True, "id": aid, "token": "dh_%s_%s" % (aid, secret), "agents": agents_public()}
+
+
+@route("DELETE", r"/api/agents/([0-9a-f]{8})")
+def r_agent_del(body, q, aid):
+    c = caller(body)
+    if not c.get("ui"):
+        raise ApiError(403, "only the user revokes agent tokens (DeviceHub page)")
+    with H.lock:
+        a = H.agents.pop(aid, None)
+        save_json("agents.json", H.agents)
+    if a:
+        event(None, "config", "agent token of %s revoked" % a["name"], c["name"])
+    return {"ok": True, "agents": agents_public()}
+
+
+# ---------------------------------------------------------------- remote agents: commands and files through the hub
+# An agent on another machine can't use the shared SSH sockets, so the hub runs the command (or moves the file) over
+# the device's shared connection itself: the same lock rules as /api/authorize, output mirrored to the device's
+# Console. exec answers application/x-ndjson lines: {"s": "o"|"e", "d": base64} as output arrives, then {"rc": N}.
+
+def call_identity(h):
+    """Identity for raw calls whose body is data: X-DevHub-Session / X-DevHub-Name headers."""
+    return {"client": "cli", "session": h.headers.get("X-DevHub-Session") or None,
+            "name": urllib.parse.unquote(h.headers.get("X-DevHub-Name") or "")}
+
+
+def granted(body):
+    """/api/authorize's checks for a command or file the hub runs itself: (True, notices) or (False, answer)."""
+    res = authorize_call(body)
+    if not res.get("ok"):
+        return False, res
+    return True, res
+
+
+def stream_start(h, ctype="application/x-ndjson"):
+    h.send_response(200)
+    h.send_header("Content-Type", ctype)
+    h.send_header("Cache-Control", "no-store")
+    h.send_header("Connection", "close")
+    h.end_headers()
+    h.close_connection = True
+
+
+@route("POST", r"/api/devices/([a-z0-9_-]+)/exec", raw=True)
+def r_exec(h, q, dev):
+    n = int(h.headers.get("Content-Length") or 0)
+    try:
+        body = json.loads(h.rfile.read(min(n, 200_000)).decode("utf-8") or "{}") if n else {}
+    except ValueError:
+        raise ApiError(400, "body is not JSON")
+    d = need_device(dev)
+    cmd = str(body.get("cmd") or "")
+    if not cmd.strip():
+        raise ApiError(400, "nothing to run")
+    ro = bool(body.get("ro"))
+    ok, res = granted(dict(body, dev=dev, ro=ro, cmd=cmd))
+    if not ok:
+        return ("application/json", json.dumps(res).encode())
+    c = caller(body)
+    timeout = max(0, int(body.get("timeout") or 0))
+    console_append(dev, c["name"], [["cmd", ("$ (read-only) " if ro else "$ ") + cmd[:2000]]])
+    p = subprocess.Popen(ssh_args(d, cmd), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out = queue.Queue()
+
+    def pump(src, tag):
+        for raw in iter(src.readline, b""):
+            out.put((tag, raw))
+        out.put((tag, None))
+
+    for src, tag in ((p.stdout, "o"), (p.stderr, "e")):
+        threading.Thread(target=pump, args=(src, tag), daemon=True).start()
+    stream_start(h)
+    open_, end, rc, gone = 2, now() + timeout if timeout else None, None, False
+    try:
+        h.wfile.write((json.dumps({"notices": res.get("notices") or [], "warning": res.get("warning")}) + "\n").encode())
+        while open_:
+            try:
+                tag, raw = out.get(timeout=1)
+            except queue.Empty:
+                if end and now() > end:
+                    p.kill()
+                    rc = 124
+                    h.wfile.write((json.dumps({"s": "e", "d": base64.b64encode(
+                        b"[DeviceHub] timed out after %d s\n" % timeout).decode()}) + "\n").encode())
+                    break
+                continue
+            if raw is None:
+                open_ -= 1
+                continue
+            h.wfile.write((json.dumps({"s": tag, "d": base64.b64encode(raw).decode()}) + "\n").encode())
+            h.wfile.flush()
+            console_append(dev, c["name"], [["out" if tag == "o" else "err", raw.decode("utf-8", "replace").rstrip("\r\n")]])
+    except (BrokenPipeError, ConnectionResetError):
+        gone = True
+        p.kill()            # the agent went away (Ctrl-C): don't leave the command running unattended
+    try:
+        p.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        p.kill()
+    rc = rc if rc is not None else p.returncode
+    console_append(dev, c["name"], [["cmd", "[exit %s]" % rc]])
+    with H.lock:
+        lk = H.locks.get(dev)
+        if lk and same(lk["holder"], c):
+            lk["last_activity"] = now()
+            H.dirty = True
+    if not gone:
+        try:
+            h.wfile.write((json.dumps({"rc": rc}) + "\n").encode())
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+    return STREAMED
+
+
+def remote_q(path):
+    return "'" + path.replace("'", "'\\''") + "'"
+
+
+@route("PUT", r"/api/devices/([a-z0-9_-]+)/file", raw=True)
+def r_file_put(h, q, dev):
+    """Copy the request body to PATH on the device (lock needed): written to PATH.devhub-part, then moved."""
+    d = need_device(dev)
+    path = (q.get("path") or [""])[0]
+    if not path.startswith("/"):
+        raise ApiError(400, "path must be absolute")
+    n = int(h.headers.get("Content-Length") or -1)
+    if n < 0:
+        raise ApiError(411, "Content-Length needed")
+    ident = call_identity(h)
+    ok, res = granted(dict(ident, dev=dev, ro=False, cmd="push %s (%d bytes)" % (path, n)))
+    if not ok:
+        return ("application/json", json.dumps(res).encode())
+    part = path + ".devhub-part"
+    p = subprocess.Popen(ssh_args(d, "cat > %s && n=$(wc -c < %s) && [ \"$n\" -eq %d ] && mv -f %s %s" % (
+        remote_q(part), remote_q(part), n, remote_q(part), remote_q(path))), stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    got = 0
+    try:
+        while got < n:
+            chunk = h.rfile.read(min(1 << 20, n - got))
+            if not chunk:
+                break
+            p.stdin.write(chunk)
+            got += len(chunk)
+        p.stdin.close()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    err = p.stderr.read().decode("utf-8", "replace").strip()
+    rc = p.wait()
+    if got != n or rc != 0:
+        ssh_run(d, "rm -f %s" % remote_q(part), timeout=20)
+        return ("application/json", json.dumps({"ok": False, "msg": "copy to %s failed%s" % (
+            path, ": " + err.splitlines()[-1][:200] if err else " (got %d of %d bytes)" % (got, n))}).encode())
+    console_append(dev, caller(ident)["name"], [["cmd", "pushed %s (%d bytes)" % (path, n)]])
+    return {"ok": True, "bytes": n, "notices": res.get("notices") or []}
+
+
+@route("GET", r"/api/devices/([a-z0-9_-]+)/file", raw=True)
+def r_file_get(h, q, dev):
+    """PATH from the device (read-only, no lock needed), with its size as Content-Length."""
+    d = need_device(dev)
+    path = (q.get("path") or [""])[0]
+    if not path.startswith("/"):
+        raise ApiError(400, "path must be absolute")
+    ok, res = granted(dict(call_identity(h), dev=dev, ro=True, cmd=""))
+    if not ok:
+        return ("application/json", json.dumps(res).encode())
+    rc, out, err = ssh_run(d, "wc -c < %s" % remote_q(path), timeout=20)
+    size = out.decode().strip()
+    if rc != 0 or not size.isdigit():
+        e = err.decode("utf-8", "replace").strip().splitlines()
+        return ("application/json", json.dumps({"ok": False, "msg": "can't read %s on %s%s" % (
+            path, dname(d), ": " + e[-1][:200] if e else "")}).encode())
+    p = subprocess.Popen(ssh_args(d, "cat %s" % remote_q(path)), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL)
+    h.send_response(200)
+    h.send_header("Content-Type", "application/octet-stream")
+    h.send_header("Content-Length", size)
+    h.send_header("Cache-Control", "no-store")
+    h.end_headers()
+    try:
+        for chunk in iter(lambda: p.stdout.read(1 << 20), b""):
+            h.wfile.write(chunk)
+    except (BrokenPipeError, ConnectionResetError):
+        p.kill()
+    p.wait()
+    h.close_connection = True
+    return STREAMED
+
+
 # ---------------------------------------------------------------- serving a file to the devices (install on all)
 # One upload, fetched by every device's harbourmaster over HTTP (http://<this machine>/dl/<token>/<name>?md5=...),
 # instead of a copy pushed to each over SSH. The token is random and the file is served only while its installs run.
@@ -3928,6 +4182,10 @@ def r_ask(body, q):
 
 @route("POST", "/api/authorize")
 def r_authorize(body, q):
+    return authorize_call(body)
+
+
+def authorize_call(body):
     c = caller(body)
     dev = str(body.get("dev") or "")
     d = need_device(dev)
@@ -4104,6 +4362,8 @@ def r_import(body, q):
 
 @route("POST", "/api/shutdown")
 def r_shutdown(body, q):
+    if getattr(REQ, "agent", None):
+        raise ApiError(403, "agents can't stop DeviceHub")
     threading.Thread(target=lambda: (time.sleep(0.3), HTTPD.shutdown()), daemon=True).start()
     return {"ok": True, "msg": "DeviceHub stopping (shared connections stay open)"}
 
@@ -4187,6 +4447,7 @@ def main():
     H.owned = st.get("owned", {})
     H.chain = st.get("chain", {})
     H.secrets = load_json("secrets.json", {})
+    H.agents = load_json("agents.json", {})
     try:
         with open(jpath("events.jsonl"), encoding="utf-8") as f:
             for line in f.readlines()[-1500:]:

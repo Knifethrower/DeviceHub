@@ -5,7 +5,7 @@ services:
   devicehub:
     # built straight from the repo, so this file works on its own (e.g. in a stacks folder); pull/rebuild to update
     build:
-      context: https://github.com/kloptops/DeviceHub.git#server-mode
+      context: https://github.com/Knifethrower/DeviceHub.git#main
       dockerfile: server/Dockerfile
     container_name: devicehub
     restart: unless-stopped

@@ -118,6 +118,37 @@ sleep 4
 $C -X POST -d '{"client":"ui"}' "http://127.0.0.1:$HUB/api/devices/byhand/connect" | grep -q '"ok": true' || fail "connect"
 for i in $(seq 40); do [ "$(mstate byhand)" = "up True" ] && break; [ "$i" = 40 ] && fail "Connect didn't connect: $(mstate byhand)"; sleep 0.5; done
 ok "no polling: left alone until Connect, then connected"
+# --- a remote agent: an agent token, and run/push/pull through the hub (no local data folder, no SSH sockets)
+AT=$($C -X POST -d '{"client":"ui","name":"Remote Claude"}' "http://127.0.0.1:$HUB/api/agents" | $PY -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+case "$AT" in dh_*) ;; *) fail "no agent token: $AT" ;; esac
+curl -s -H "X-DevHub-Token: $AT" -X PUT -d '{"client":"ui","settings":{"away_mode":true}}' "http://127.0.0.1:$HUB/api/settings" |
+    grep -q "log in" || fail "an agent token acted as the user"
+curl -s -H "X-DevHub-Token: $AT" -X POST -d '{}' "http://127.0.0.1:$HUB/api/shutdown" | grep -q "can't stop" || fail "an agent stopped the hub"
+R="env -u DEVHUB_PORT DEVHUB_DATA=$T/nowhere DEVHUB_URL=http://127.0.0.1:$HUB DEVHUB_TOKEN=$AT DEVHUB_NAME=remote-agent $PY $HERE/devhub.py"
+$R run byhand -- 'echo nope' 2>&1 | grep -q "take the lock first" || fail "remote run without the lock was allowed"
+[ "$($R run byhand --ro -- 'echo ro-ok')" = ro-ok ] || fail "remote read-only run"
+$R acquire byhand "remote agent test" --for 5m | grep -q "is yours" || fail "remote acquire"
+rc=0; out=$($R run byhand -- 'echo out-line; echo err-line >&2; exit 3' 2>"$T/err") || rc=$?
+[ "$out" = out-line ] && [ "$rc" = 3 ] && grep -q err-line "$T/err" || fail "remote run: out=$out rc=$rc err=$(cat "$T/err")"
+head -c 300000 /dev/urandom > "$T/blob"
+$R push byhand "$T/blob" "$T/remote-blob" >/dev/null || fail "remote push"
+cmp -s "$T/blob" "$T/remote-blob" || fail "pushed file differs"
+$R pull byhand "$T/remote-blob" "$T/blob-back" >/dev/null || fail "remote pull"
+cmp -s "$T/blob" "$T/blob-back" || fail "pulled file differs"
+$R pull byhand "$T/no-such-file" "$T/x" 2>&1 | grep -q "can't read" || fail "pull of a missing file"
+$C "http://127.0.0.1:$HUB/api/state" | $PY -c "import json,sys; d=json.load(sys.stdin); v=[x for x in d['devices'] if x['id']=='byhand'][0]; assert v['lock']['holder']['name']=='remote-agent', v['lock']" ||
+    fail "lock not under the agent's name"
+$R release byhand --dirty "fake device" >/dev/null || fail "remote release"
+# the devhub command as the Agents page tells an agent to get it: downloaded from the hub, on its own
+mkdir -p "$T/cli" && curl -fsS "http://127.0.0.1:$HUB/devhub.py" -o "$T/cli/devhub" || fail "devhub.py download"
+RD="env -u DEVHUB_PORT DEVHUB_DATA=$T/nowhere DEVHUB_URL=http://127.0.0.1:$HUB DEVHUB_TOKEN=$AT DEVHUB_NAME=remote-agent $PY $T/cli/devhub"
+$RD status | grep -q byhand || fail "the downloaded devhub can't list devices"
+$RD agent-guide | grep -q "## The rules" || fail "the downloaded devhub has no agent guide"
+AID=$(echo "$AT" | cut -d_ -f2)
+$C -X DELETE -d '{"client":"ui"}' "http://127.0.0.1:$HUB/api/agents/$AID" | grep -q '"ok": true' || fail "revoke"
+$R status >/dev/null 2>&1 && fail "a revoked token still works"
+ok "remote agent: token, run (output, exit code), push/pull, lock, revoke"
+
 # --- install on all: harbourmaster fetches the zip from DeviceHub over HTTP; PortMaster.zip is accepted
 $PY -c "import zipfile; z = zipfile.ZipFile('$T/game.zip', 'w'); z.writestr('Game.sh', '#!/bin/sh'); z.writestr('game/port.json', '{\"attr\": {\"title\": \"Game\"}}')"
 $PY -c "import zipfile; z = zipfile.ZipFile('$T/pmrel.zip', 'w'); z.writestr('PortMaster/harbourmaster', '#!/bin/sh'); z.writestr('PortMaster/version', '2026.10.01')"
