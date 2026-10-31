@@ -2353,6 +2353,8 @@ class JobError(Exception):
 
 
 LOGURU = re.compile(r"^\d{4}-\d\d-\d\d [\d:.]+ \| (\w+)\s*\| \S+ - (.*)$")
+LOGURU_ANY = re.compile(r"\d{4}-\d\d-\d\d [\d:.]+ \| \w+\s*\| ")      # a log line glued to a progress bar
+HM_PROGRESS = re.compile(r"^\[[| ]+\] - [\d.]+ \w?B / [\d.]+ \w?B$")   # harbourmaster's download progress bar
 
 
 # the folders PortMaster.sh and harbourmaster look in, after an explicit folder from the profile
@@ -2382,6 +2384,10 @@ cd "$PM" || { echo "DEVHUB-RC=90"; exit 0; }
 case "$PM" in */.local/share/PortMaster) XDG_DATA_HOME="${PM%/PortMaster}"; export XDG_DATA_HOME;; esac
 H=""
 [ "$(id -u)" = 0 ] || { sudo -n true 2>/dev/null && H="sudo -n -E"; }
+# harbourmaster downloads a URL into tempfile.mkdtemp(): /tmp is RAM on most CFWs (RG351P: 490 MB), so a big zip
+# fills it. Its temporary folder goes next to PortMaster, on the card, and is removed with the staging folder.
+TMPDIR="$PM/.devhub-staging/tmp"; export TMPDIR
+mkdir -p "$TMPDIR" 2>/dev/null || $H mkdir -p "$TMPDIR"
 $H ./harbourmaster --no-check --no-colour install "$Z" </dev/null 2>&1
 rc=$?
 $S rm -rf "$PM/.devhub-staging"
@@ -2657,12 +2663,19 @@ def install_job(job, d, up, refresh, took_lock, who):
         p = subprocess.Popen(ssh_args(d, "sh -s"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         p.stdin.write(remote_sh(PM_FIND + PM_INSTALL, PMDIR=pm, Z=target_z).encode())
         p.stdin.close()
-        hm_rc, extracted = None, 0
+        hm_rc, extracted, hm_error = None, 0, None
         for raw in p.stdout:
-            for line in raw.decode("utf-8", "replace").replace("\r", "\n").split("\n"):
+            text = raw.decode("utf-8", "replace").replace("\r", "\n")
+            text = LOGURU_ANY.sub(lambda m: "\n" + m.group(0), text)      # a log line glued to the progress bar
+            for line in text.split("\n"):
                 if line.startswith("DEVHUB-RC="):
                     hm_rc = int(line[10:] or 1)
                     continue
+                if HM_PROGRESS.match(line.strip()):    # the download's progress bar: the step, not the log
+                    job["step"] = "harbourmaster downloads it: " + line.strip().split("] - ", 1)[1]
+                    continue
+                if hm_error in (None, "harbourmaster crashed") and re.match(r"^\w+(Error|Exception): ", line):
+                    hm_error = line.strip()      # the exception harbourmaster caught (it still exits 0)
                 m = LOGURU.match(line)
                 if m:   # harbourmaster's own log lines: keep the message, count the per-file DEBUG noise
                     level, msg = m.group(1), m.group(2)
@@ -2670,6 +2683,8 @@ def install_job(job, d, up, refresh, took_lock, who):
                         extracted += msg.startswith("Extracting ")
                         job["extracted"] = extracted
                         continue
+                    if level in ("ERROR", "CRITICAL") and msg.startswith("An error has been caught") and not hm_error:
+                        hm_error = "harbourmaster crashed"
                     line = msg if level == "INFO" else "%s: %s" % (level, msg)
                     if msg.startswith("MATCH REQS: False"):
                         job["warning"] = ("harbourmaster says this port does not match the device's requirements "
@@ -2684,6 +2699,8 @@ def install_job(job, d, up, refresh, took_lock, who):
         if hm_rc != 0:
             tail = [l for l in job["log"][-8:] if not l.lstrip().startswith("- ")]
             raise JobError("harbourmaster install failed (exit %s)%s" % (hm_rc, ": " + tail[-1] if tail else ""))
+        if hm_error:     # harbourmaster logs a caught exception and still exits 0
+            raise JobError("harbourmaster install failed: %s" % hm_error[:200])
         title = up["info"].get("title") or up["name"]
         if refresh == "reload" and d.get("fe_reload"):
             job["step"] = "reloading the game list"
