@@ -10,16 +10,23 @@ Passwords never leave this process except through a one-shot FIFO to ssh's askpa
 API never returns them. At rest they are encrypted: with Windows DPAPI (the Windows user) under WSL,
 with openssl and a key file only this user can read (data/secret.key) on Linux.
 """
-import base64, errno, hashlib, http.server, json, os, re, secrets, shlex, shutil, signal, socket
+import base64, errno, hashlib, http.server, io, json, os, re, secrets, shlex, shutil, signal, socket
 import queue, struct, subprocess, sys, threading, time, traceback, urllib.parse, zipfile, zlib
+import numpy as np
 from concurrent.futures import ThreadPoolExecutor
+try:                                    # JPEG for the live view is ~10x cheaper to encode than PNG
+    from PIL import Image as _PILImage
+    PIL_OK = True
+except Exception:
+    _PILImage, PIL_OK = None, False
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.abspath(os.environ.get("DEVHUB_DATA") or os.path.join(HERE, "data"))
 PORT = int(os.environ.get("DEVHUB_PORT") or 8765)
 FILE_PORT = int(os.environ.get("DEVHUB_FILE_PORT") or 8766)   # the temporary file server for installs (local mode)
-BIND = os.environ.get("DEVHUB_BIND") or "127.0.0.1"   # server mode (devhubsrv.py) listens on the LAN
-RUN = "/tmp/devhub-%d-%d" % (os.getuid(), PORT)
+BIND = os.environ.get("DEVHUB_BIND") or os.environ.get("DEVHUB_HOST") or "127.0.0.1"   # server mode (devhubsrv.py) listens on the LAN
+HOST = BIND
+RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
 VERSION = "1.0"
@@ -109,6 +116,7 @@ DEVICE_DEFAULTS = {
     "auth": "manual",            # password (DeviceHub opens the connection) | key | manual (user opens it)
     "socket": "", "identity": "", "smb": "", "ports_dir": "",
     "soc": "", "gpu": "", "ram_mb": 0, "screen": "",
+    "stream": "auto",            # live screen route: auto (best the device offers) | wlr | drm | fb
     "fe_proc": "", "fe_start": "", "fe_stop": "",
     "fe_reload": "",             # refresh the game list without a restart (Knulli/Batocera ES API)
     "fe_alt": "",                # other processes that also count as the front end being up (a laptop's desktop:
@@ -429,6 +437,8 @@ def clean_device(src, old=None):
         raise ApiError(400, "auth must be password, key or manual")
     if d["guard"] not in ("enforce", "warn", "off"):
         raise ApiError(400, "guard must be enforce, warn or off")
+    if d["stream"] not in ("auto", "wlr", "drm", "fb"):
+        raise ApiError(400, "stream must be auto, wlr, drm or fb")
     if "require_approval" in (src or {}) and "approval" not in (src or {}):     # profiles from before 2026-10-06
         d["approval"] = "ask" if src["require_approval"] in (True, "true", "1", "on") else d["approval"]
     d.pop("require_approval", None)
@@ -2108,30 +2118,52 @@ def fe_action(dev, d, action):
     return False, "%s did not stay up" % d["fe_proc"]
 
 
-def png_bytes(w, h, rows):
+def png_bytes(w, h, rows, level=6):
     def chunk(tag, data):
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) +
-            chunk(b"IDAT", zlib.compress(b"".join(rows), 6)) + chunk(b"IEND", b""))
+            chunk(b"IDAT", zlib.compress(b"".join(rows), level)) + chunk(b"IEND", b""))
 
 
-def fb_to_png(raw, w, h, stride, bpp):
-    """Framebuffer rows (BGRA/BGR little-endian, or RGB565) to an RGB PNG."""
-    rows = []
-    for y in range(h):
-        r = raw[y * stride: y * stride + w * bpp // 8]
-        rgb = bytearray(w * 3)
-        if bpp == 32:
-            rgb[0::3], rgb[1::3], rgb[2::3] = r[2::4], r[1::4], r[0::4]
-        elif bpp == 24:
-            rgb[0::3], rgb[1::3], rgb[2::3] = r[2::3], r[1::3], r[0::3]
-        else:
-            for i, v in enumerate(struct.unpack("<%dH" % w, r)):
-                rgb[i * 3] = (v >> 11) * 255 // 31
-                rgb[i * 3 + 1] = ((v >> 5) & 63) * 255 // 63
-                rgb[i * 3 + 2] = (v & 31) * 255 // 31
-        rows.append(b"\x00" + bytes(rgb))
-    return png_bytes(w, h, rows)
+def fb_to_rgb(raw, w, h, stride, bpp):
+    """Framebuffer rows (BGRA/BGR little-endian, or RGB565) to an (h, w, 3) uint8 RGB array.
+
+    Vectorised with numpy: the old per-row struct.unpack + per-pixel loop took ~0.5 s per 16bpp frame,
+    which is what turned the live view into a multi-second-latency slideshow."""
+    a = np.frombuffer(raw, dtype=np.uint8)
+    if len(a) < h * stride:
+        raise ValueError("short frame: %d < %d" % (len(a), h * stride))
+    a = a[:h * stride].reshape(h, stride)
+    if bpp == 32:
+        px = a[:, :w * 4].reshape(h, w, 4)[:, :, [2, 1, 0]]
+    elif bpp == 24:
+        px = a[:, :w * 3].reshape(h, w, 3)[:, :, [2, 1, 0]]
+    else:
+        v = a[:, :w * 2].copy().view("<u2").reshape(h, w)
+        r = (((v >> 11) & 31).astype(np.uint16) * 255 // 31).astype(np.uint8)
+        g = (((v >> 5) & 63).astype(np.uint16) * 255 // 63).astype(np.uint8)
+        b = ((v & 31).astype(np.uint16) * 255 // 31).astype(np.uint8)
+        px = np.stack([r, g, b], axis=-1)
+    return np.ascontiguousarray(px)
+
+
+def fb_to_png(raw, w, h, stride, bpp, level=6):
+    """Framebuffer rows to an RGB PNG. level: 2 compresses a live frame a lot cheaper than a saved
+    screenshot (screenshots keep 6)."""
+    px = fb_to_rgb(raw, w, h, stride, bpp)
+    rows = np.zeros((h, 1 + w * 3), dtype=np.uint8)
+    rows[:, 1:] = px.reshape(h, w * 3)
+    return png_bytes(w, h, [rows.tobytes()], level)
+
+
+def fb_to_jpeg(raw, w, h, stride, bpp, quality=75):
+    """JPEG encode of a framebuffer. ~10x cheaper than PNG for a live frame (PNG's zlib pass dominates)."""
+    if not PIL_OK:
+        return None
+    buf = io.BytesIO()
+    _PILImage.fromarray(fb_to_rgb(raw, w, h, stride, bpp), "RGB").save(
+        buf, "JPEG", quality=quality, subsampling=2, optimize=False)
+    return buf.getvalue()
 
 
 # Wayland front ends (ROCKNIX's sway) never reach /dev/fb0, so a framebuffer capture comes back blank there:
@@ -2302,12 +2334,9 @@ def save_raw_shot(dev, d, raw, w, h, pitch, bpp):
 
 def rotate_cw(raw, w, h, pitch, px):
     """Turn a buffer 90 degrees clockwise: a landscape device whose panel scans out in portrait."""
-    mv = memoryview(raw)
-    rows = []
-    for x in range(w):
-        o = x * px
-        rows.append(b"".join(mv[(h - 1 - y) * pitch + o:(h - 1 - y) * pitch + o + px] for y in range(h)))
-    return b"".join(rows), h, w, h * px
+    arr = np.frombuffer(raw, dtype=np.uint8).reshape(h, pitch)[:, :w * px].reshape(h, w, px)
+    rot = np.transpose(arr, (1, 0, 2))[:, ::-1, :].reshape(w, h * px)
+    return rot.tobytes(), h, w, h * px
 
 
 # ---------------------------------------------------------------- port install through PortMaster's harbourmaster
@@ -2929,7 +2958,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if res:
                     self.reply(*res)
                     return
-            elif host not in ("127.0.0.1", "localhost", "::1"):
+            elif BIND == "127.0.0.1" and host not in ("127.0.0.1", "localhost", "::1"):
                 raise ApiError(403, "bad Host header")
             if hit:
                 fn, auth, raw_body, mt = hit
@@ -3000,7 +3029,183 @@ def r_index(body, q):
         html = f.read().replace("__DEVHUB_TOKEN__", TOKEN).replace("__DEVHUB_BUILD__", ui_build())
     return ("text/html; charset=utf-8", html.encode("utf-8"),
             {"X-Frame-Options": "DENY", "Content-Security-Policy":
-             "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"})
+             "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-src 'self' https:; connect-src 'self' https:"})
+
+
+@route("GET", r"/proxy/wiki/(.*)", auth=False)
+def r_wiki_proxy(body, q, path):
+    """Proxy for PortMaster Wiki pages, injecting a script that intercepts download clicks."""
+    import urllib.request
+    if not path:
+        path = ""
+    url = "https://jantrueno.github.io/PortMaster-Wiki/" + path
+    qs_parts = []
+    for k, v in q.items():
+        for val in v:
+            qs_parts.append("%s=%s" % (urllib.parse.quote(k), urllib.parse.quote(val)))
+    if qs_parts:
+        url += "?" + "&".join(qs_parts)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "DeviceHub/1.0 (personal handheld manager)"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            content = r.read()
+            ctype = r.headers.get("Content-Type", "text/html")
+    except Exception as e:
+        return ("text/plain", ("Proxy error: %s" % e).encode(), {})
+    if "text/html" in ctype:
+        html = content.decode("utf-8", "replace")
+        inject_path = os.path.join(HERE, "inject_script2.txt")
+        try:
+            inject = open(inject_path).read()
+        except OSError:
+            inject = ""
+        if "</body>" in html:
+            html = html.replace("</body>", inject + "</body>", 1)
+        else:
+            html += inject
+        content = html.encode("utf-8")
+    return (ctype, content, {"X-Frame-Options": "", "Content-Security-Policy": "frame-ancestors *"})
+
+
+@route("GET", r"/proxy/pm/(.*)", auth=False)
+def r_pm_proxy(body, q, path):
+    """Proxy for PortMaster website pages, injecting a script that intercepts download clicks."""
+    import urllib.request
+    if not path:
+        path = ""
+    url = "https://portmaster.games/" + path
+    # Reconstruct query string from q (excluding internal params)
+    qs_parts = []
+    for k, v in q.items():
+        for val in v:
+            qs_parts.append("%s=%s" % (urllib.parse.quote(k), urllib.parse.quote(val)))
+    if qs_parts:
+        url += "?" + "&".join(qs_parts)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "DeviceHub/1.0 (personal handheld manager)"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            content = r.read()
+            ctype = r.headers.get("Content-Type", "text/html")
+    except Exception as e:
+        return ("text/plain", ("Proxy error: %s" % e).encode(), {})
+    if "text/html" in ctype:
+        html = content.decode("utf-8", "replace")
+        # Inject script before </body>
+        inject = '''
+<script>
+(function() {
+  // Intercept any navigation to a download URL
+  // Strategy 1: Override window.location.href setter
+  var _href = window.location.href;
+  try {
+    Object.defineProperty(window.location, "href", {
+      configurable: true,
+      get: function() { return _href; },
+      set: function(val) {
+        if (String(val).match(/\.(zip|squashfs)$/i) || String(val).includes("releases/download")) {
+          window.parent.postMessage({ type: "pm-download", url: String(val), title: document.title }, "*");
+          _href = val;
+          return;
+        }
+        _href = val;
+        window.location.assign(val);
+      }
+    });
+  } catch(e) { console.log("href override:", e); }
+
+  // Strategy 2: Override location.assign
+  try {
+    var _assign = window.location.assign.bind(window.location);
+    window.location.assign = function(url) {
+      if (String(url).match(/\.(zip|squashfs)$/i) || String(url).includes("releases/download")) {
+        window.parent.postMessage({ type: "pm-download", url: String(url), title: document.title }, "*");
+        return;
+      }
+      _assign(url);
+    };
+  } catch(e) { console.log("assign override:", e); }
+
+  // Strategy 3: Override location.replace
+  try {
+    var _replace = window.location.replace.bind(window.location);
+    window.location.replace = function(url) {
+      if (String(url).match(/\.(zip|squashfs)$/i) || String(url).includes("releases/download")) {
+        window.parent.postMessage({ type: "pm-download", url: String(url), title: document.title }, "*");
+        return;
+      }
+      _replace(url);
+    };
+  } catch(e) { console.log("replace override:", e); }
+
+  // Strategy 4: Rewrite download links to intercept clicks
+  function rewriteDownloadLinks() {
+    document.querySelectorAll("a[href]").forEach(function(a) {
+      var href = a.getAttribute("href") || "";
+      if (href.match(/\.(zip|squashfs)$/i) || href.includes("releases/download") || href.includes("github.com/PortsMaster")) {
+        if (!a.dataset.pmIntercepted) {
+          a.dataset.pmIntercepted = "1";
+          var origHref = href;
+          a.removeAttribute("href");
+          a.setAttribute("data-pm-url", origHref);
+          a.style.cursor = "pointer";
+          a.addEventListener("click", function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            window.parent.postMessage({ type: "pm-download", url: origHref, title: document.title }, "*");
+            return false;
+          }, true);
+        }
+      }
+    });
+  }
+  rewriteDownloadLinks();
+  var linkObserver = new MutationObserver(rewriteDownloadLinks);
+  linkObserver.observe(document.body, { childList: true, subtree: true });
+  setTimeout(rewriteDownloadLinks, 1000);
+  setTimeout(rewriteDownloadLinks, 3000);
+
+  // Strategy 5: Intercept clicks on any element (fallback)
+  document.addEventListener("click", function(e) {
+    var el = e.target;
+    while (el && el !== document) {
+      if (el.tagName === "A" && el.dataset && el.dataset.pmUrl) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.parent.postMessage({ type: "pm-download", url: el.dataset.pmUrl, title: document.title }, "*");
+        return;
+      }
+      el = el.parentElement;
+    }
+  }, true);
+
+  // Strategy 5: Intercept form submissions
+  document.addEventListener("submit", function(e) {
+    var form = e.target;
+    var action = form.getAttribute("action") || "";
+    if (action.match(/\.(zip|squashfs)$/i) || action.includes("download")) {
+      e.preventDefault();
+      window.parent.postMessage({ type: "pm-download", url: action, title: document.title }, "*");
+    }
+  }, true);
+
+  // Strategy 6: Override window.open
+  var origOpen = window.open;
+  window.open = function(url, target, features) {
+    if (String(url).match(/\.(zip|squashfs)$/i) || String(url).includes("releases/download")) {
+      window.parent.postMessage({ type: "pm-download", url: String(url), title: document.title }, "*");
+      return null;
+    }
+    return origOpen(url, target, features);
+  };
+})();
+</script>
+'''
+        if "</body>" in html:
+            html = html.replace("</body>", inject + "</body>", 1)
+        else:
+            html += inject
+        content = html.encode("utf-8")
+    return (ctype, content, {"X-Frame-Options": "", "Content-Security-Policy": "frame-ancestors *"})
 
 
 @route("GET", "/sw.js", auth=False)
@@ -3103,6 +3308,102 @@ def rc_device(slug, refresh=False):
 def html_text(s):
     import html as _html
     return re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", s))).strip()
+
+
+# ---------------------------------------------------------------- PortMaster ports catalog (ports.json from the PortMaster website)
+# Browse and install ports directly from the official PortMaster ports list.
+
+PM_PORTS_URL = "https://raw.githubusercontent.com/PortsMaster/PortMaster-Info/main/ports.json"
+PM_PORTS_UA = "DeviceHub/%s (personal handheld manager; fetches port catalog on user request)" % VERSION
+H.pm_ports = None
+
+
+def pm_ports_cache():
+    if H.pm_ports is None:
+        H.pm_ports = load_json("pm_ports.json", {"at": 0, "ports": {}})
+    return H.pm_ports
+
+
+def pm_ports_fetch(refresh=False):
+    c = pm_ports_cache()
+    if refresh or not c.get("ports") or now() - c.get("at", 0) > 86400:
+        import urllib.request
+        req = urllib.request.Request(PM_PORTS_URL, headers={"User-Agent": PM_PORTS_UA, "Accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = json.loads(r.read().decode("utf-8"))
+        except Exception as e:
+            if c.get("ports"):
+                return c
+            raise ApiError(502, "PortMaster ports list did not answer (%s)" % e)
+        ports = data.get("ports", {})
+        # Build a simplified catalog
+        catalog = {}
+        for key, info in ports.items():
+            attr = info.get("attr", {})
+            src = info.get("source", {})
+            catalog[key] = {
+                "name": info.get("name", key),
+                "title": attr.get("title", key.replace(".zip", "").replace("_", " ").title()),
+                "desc": attr.get("desc", ""),
+                "genres": attr.get("genres", []),
+                "porter": attr.get("porter", []),
+                "rtr": attr.get("rtr", False),
+                "runtime": attr.get("runtime", []),
+                "inst": attr.get("inst", ""),
+                "image": attr.get("image", {}),
+                "url": src.get("url", ""),
+                "size": src.get("size", 0),
+                "md5": src.get("md5", ""),
+                "date_added": src.get("date_added", ""),
+                "date_updated": src.get("date_updated", ""),
+                "arch": attr.get("arch", []),
+                "avail": attr.get("avail", []),
+                "availability": attr.get("availability", "full"),
+                "rating": attr.get("rating"),
+                "store": attr.get("store", []),
+            }
+        c = {"at": now(), "ports": catalog}
+        H.pm_ports = c
+        save_json("pm_ports.json", c)
+    return c
+
+
+@route("GET", "/api/ports-catalog")
+def r_pm_ports(body, q):
+    refresh = bool(q.get("refresh"))
+    c = pm_ports_fetch(refresh)
+    ports = c.get("ports", {})
+    # Optional filtering
+    genre = (q.get("genre") or [""])[0].lower()
+    search = (q.get("search") or [""])[0].lower()
+    rtr_only = (q.get("rtr") or [""])[0] == "1"
+    device_filter = (q.get("device") or [""])[0].lower()
+    result = []
+    for key, p in ports.items():
+        if genre and genre not in [g.lower() for g in p.get("genres", [])]:
+            continue
+        if rtr_only and not p.get("rtr"):
+            continue
+        if search and search not in p.get("title", "").lower() and search not in p.get("desc", "").lower():
+            continue
+        if device_filter:
+            avail = [a.split(":")[0].lower() for a in p.get("avail", [])]
+            if device_filter not in avail:
+                continue
+        result.append(p)
+    result.sort(key=lambda x: x.get("title", "").lower())
+    return {"ok": True, "at": c.get("at", 0), "count": len(result), "ports": result, "source": PM_PORTS_URL}
+
+
+@route("GET", "/api/ports-catalog/genres")
+def r_pm_ports_genres(body, q):
+    c = pm_ports_fetch()
+    genres = set()
+    for p in c.get("ports", {}).values():
+        for g in p.get("genres", []):
+            genres.add(g)
+    return {"ok": True, "genres": sorted(genres)}
 
 
 @route("GET", "/api/retrocatalog/index")
@@ -3385,6 +3686,383 @@ def r_frontend(body, q, dev):
     rt(dev)["poke"] = True
     event(dev, "frontend", "%s by %s: %s" % (action, c["name"], msg), c["name"])
     return with_notices(c, {"ok": ok, "msg": msg})
+
+
+# ---------------------------------------------------------------- live screen stream (the fbstream protocol)
+# A streamer on the device captures its own display and sends it to the hub over UDP in the packets of
+# Knifethrower's fbstream / fb_receiver: a config line [u8=1][w][h][bpp], then zlib-compressed frame chunks
+# [u8=2][frame][chunk][total][dlen][orig]. A binary is pushed to /tmp on the device once per boot:
+#   fb   /dev/fb0 console, read by the user's fbstream binary as-is
+#   drm  the scanned-out plane, read through the legacy dumb-buffer calls (old Rockchip 4.4 kernels too)
+#   way  the Wayland compositor's picture, one grim shot per frame (sway never writes to /dev/fb0)
+# Frames only go out when the content changed, so an idle screen costs the capture alone.
+
+STREAM_PORT_FIRST = 9876
+STREAMS = {}        # device id -> StreamReceiver while the view is open
+
+STREAM_PROBE_SH = r"""
+u=$(id -u)
+want="${1:-auto}"          # auto | wlr | drm | fb, from the device's settings
+# find a compositor socket once: both the wlr client and grim need it
+way=""
+for r in "$XDG_RUNTIME_DIR" /var/run/0-runtime-dir /run/user/$u /run/0-runtime-dir; do
+  [ -n "$way" ] && break
+  for s in "$r"/wayland-*; do
+    case "$s" in *.lock) continue;; esac
+    [ -S "$s" ] && { way="$r ${s##*/}"; break; }
+  done
+done
+# an explicit choice is honoured only when the device really has that route
+case "$want" in
+  wlr) [ -n "$way" ] && { echo "live wlr $u $way"; exit 0; } ;;
+  drm) [ -r /dev/dri/card0 ] && { echo "live drm $u"; exit 0; } ;;
+  fb)  [ -r /dev/fb0 ] && { echo "live fb $u"; exit 0; } ;;
+esac
+# auto, or the chosen route is missing: the best available one
+[ -n "$way" ] && { echo "live wlr $u $way"; exit 0; }
+if command -v grim >/dev/null 2>&1 && [ -n "$way" ]; then
+  echo "live way $u $way"; exit 0
+fi
+[ -r /dev/dri/card0 ] && { echo "live drm $u"; exit 0; }
+[ -r /dev/fb0 ] && { echo "live fb $u"; exit 0; }
+echo "live none $u"
+"""
+
+
+class StreamReceiver(threading.Thread):
+    """Own UDP port for one device; reassembles frames like fb_receiver.py does and turns the newest one
+    into a PNG for the web UI (server side, so the device stays light)."""
+    daemon = True
+
+    def __init__(self, dev, port, fps, mode):
+        super().__init__()
+        self.dev, self.port, self.fps, self.mode = dev, port, fps, mode
+        self.lock = threading.Lock()
+        self.stop = False
+        self.cfg = None          # (w, h, bpp) from the config packet
+        self.frame = None        # (fid, raw zlib-decoded bytes) of the newest complete frame
+        self.pending = {}        # fid -> {chunk idx: bytes}, like fb_receiver's reassembly
+        self.done_fid = 0
+        self.n = 0
+        self.clock = []          # arrival times for the fps reading
+        self.png_fid = None
+        self.png_cfg = None
+        self.png_cache = None
+        self.err = ""
+        self.bound = False
+        self.last_pkt = 0.0      # arrival of any packet, including the static-screen keepalive
+
+    def run(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
+            s.bind(("0.0.0.0", self.port))
+        except OSError as e:
+            self.err = "cannot listen on UDP %d: %s" % (self.port, e)
+            return
+        self.bound = True
+        s.settimeout(0.5)
+        try:
+            while not self.stop:
+                try:
+                    pkt, _ = s.recvfrom(65536)
+                except socket.timeout:
+                    continue
+                try:
+                    self.feed(pkt)
+                except Exception:
+                    log("stream", self.dev, "bad packet", traceback.format_exc()[-300:])
+        finally:
+            s.close()
+
+    def feed(self, pkt):
+        self.last_pkt = time.monotonic()
+        kind = pkt[0]
+        w, h, bpp = self.cfg or (0, 0, 0)
+        if kind == 1:
+            if len(pkt) >= 11:
+                cw, ch, cb = struct.unpack("!IIH", pkt[1:11])
+                if cw and ch and cb in (16, 24, 32):
+                    self.cfg = (cw, ch, cb)
+            return
+        if kind not in (2, 3) or len(pkt) < 17 or not w:
+            return
+        fid, ci, tot, dlen, orig = struct.unpack("!IHHII", pkt[1:17])
+        if orig != w * h * (bpp // 8) or not tot or ci >= tot or len(pkt) - 17 < dlen:
+            return
+        old = self.done_fid - 10            # fb_receiver lag: chunks from long-gone frames go straight out
+        if self.done_fid and fid <= old:
+            return
+        pb = self.pending.setdefault(fid, {})
+        pb[ci] = pkt[17:17 + dlen]
+        if len(self.pending) > 8:           # fb_receiver cap: no queueing behind a device that fell behind
+            del self.pending[min(self.pending)]
+        if fid not in self.pending or len(pb) < tot:
+            return
+        try:
+            payload = zlib.decompress(b"".join(pb[i] for i in range(tot)))
+        except zlib.error:
+            payload = None
+        del self.pending[fid]
+        if payload is None or len(payload) != orig or fid <= self.done_fid:
+            return
+        # delta frame (type 3): XOR with the previous frame to reconstruct the current one
+        if kind == 3:
+            with self.lock:
+                prev = self.frame[1] if self.frame else None
+            if prev is None or len(prev) != orig:
+                return   # no reference frame yet; wait for a keyframe
+            raw = bytes(np.frombuffer(payload, dtype=np.uint8) ^ np.frombuffer(prev, dtype=np.uint8))
+        else:
+            raw = payload
+        with self.lock:
+            self.done_fid = fid
+            self.frame = (fid, raw)
+            self.n += 1
+            self.clock.append(time.monotonic())
+            self.clock = [t for t in self.clock if t > time.monotonic() - 3]
+
+    def status(self):
+        with self.lock:
+            frame, cfg, n, clock = self.frame, self.cfg, self.n, list(self.clock)
+        w, h, bpp = cfg or (0, 0, 0)
+        now = time.monotonic()
+        recent = [t for t in clock if now - t <= 3]
+        return {"mode": self.mode, "port": self.port, "fps": self.fps, "measured": round(len(recent) / 3, 1),
+                "w": w, "h": h, "bpp": bpp,
+                "frames": n, "fid": frame[0] if frame else 0, "recent": len(recent),
+                "age": round(now - clock[-1], 1) if clock else None, "error": self.err or None,
+                "pkt_age": round(now - self.last_pkt, 1) if self.last_pkt else None}
+
+    def image(self, d):
+        """The newest frame encoded for the UI, as (content-type, bytes); re-encoded only once per frame
+        id so repeated polls reuse the cache."""
+        with self.lock:
+            frame, cfg = self.frame, self.cfg
+            fid = frame[0] if frame else None
+        if not frame or not cfg or fid is None:
+            return None
+        if fid == self.png_fid and self.png_cfg == cfg and self.png_cache:
+            return self.png_cache
+        _, raw = frame
+        w, h, bpp = cfg
+        stride = w * bpp // 8               # the device packs rows tight, no pitch padding
+        scr = re.match(r"(\d+)\s*x\s*(\d+)", d.get("screen") or "")
+        if scr and h > w and int(scr.group(1)) > int(scr.group(2)):
+            raw, w, h, stride = rotate_cw(raw, w, h, stride, bpp // 8)
+        jpg = fb_to_jpeg(raw, w, h, stride, bpp)
+        out = ("image/jpeg", jpg) if jpg else ("image/png", fb_to_png(raw, w, h, stride, bpp, level=1))
+        with self.lock:
+            self.png_fid = fid
+            self.png_cfg = cfg
+            self.png_cache = out
+        return out
+
+    def close(self):
+        self.stop = True
+
+
+def stream_port():
+    used = {s.port for s in STREAMS.values()}
+    p = STREAM_PORT_FIRST
+    while True:
+        if p not in used:
+            # a receiver that was just stopped may not have released its socket yet, so probe the
+            # port for real instead of trusting STREAMS alone
+            t = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                t.bind(("0.0.0.0", p))
+                return p
+            except OSError:
+                pass
+            finally:
+                t.close()
+        p += 1
+
+
+def server_ip_for(host):
+    """The hub's address on the network path to the device: the src of its own route to it."""
+    try:
+        p = subprocess.run(["ip", "-o", "route", "get", host], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"src (\S+)", p.stdout)
+    return m.group(1) if m else None
+
+
+def upload_streamer(d, name, remote):
+    """Push the streamer binary to /tmp on the device, but only when it is not already there (identical
+    size AND checksum, or size alone when the device has no sha1sum; two builds can share the size)."""
+    p = os.path.join(HERE, "stream", name)
+    try:
+        sz = os.path.getsize(p)
+    except OSError:
+        raise ApiError(500, "streamer helper missing in the installation: %s" % p)
+    want = hashlib.sha1(open(p, "rb").read()).hexdigest()
+    rc, out, _ = ssh_run(d, "wc -c < %s 2>/dev/null; sha1sum %s 2>/dev/null" % (remote, remote), timeout=10)
+    lines = [x for x in out.decode().splitlines() if x.strip()]
+    if rc == 0 and lines and lines[0].strip() == str(sz):
+        if len(lines) < 2 or lines[1].split()[0] == want:
+            return
+    rc, out, err = ssh_run(d, "cat > %s && chmod 700 %s && echo ok" % (remote, remote), inp=open(p, "rb").read(), timeout=60)
+    if rc != 0 or out.strip() != b"ok":
+        raise ApiError(500, "streamer upload failed: %s" % err.decode("utf-8", "replace").strip()[-200:])
+
+
+def stream_stop(dev, quiet=False, d=None):
+    """Stop a device's live stream: receiver socket down, remote streamer killed."""
+    with H.lock:
+        s = STREAMS.pop(dev, None)
+    if s:
+        s.close()
+        s.join(timeout=2)               # wait for the receiver to drop its UDP socket before a restart
+        if d:
+            ssh_run(d, "pkill dhstream 2>/dev/null; pkill fbstream 2>/dev/null; true", timeout=8)
+        if not quiet:
+            log("stream", dev, "stopped")
+    return s
+
+
+@route("POST", r"/api/devices/([a-z0-9_-]+)/live/start")
+def r_live_start(body, q, dev):
+    d = need_device(dev)
+    c = caller(body)
+    fps = min(30, max(1, int(body.get("fps") or 4)))
+    res = body.get("res") or body.get("resolution")
+    want = (d.get("stream") or "auto").strip().lower()
+    if want not in ("auto", "wlr", "drm", "fb"):
+        want = "auto"
+    for other in [x for x in list(STREAMS) if x != dev]:   # one live view at a time: the CPU budget
+        stream_stop(other, quiet=True)
+    stream_stop(dev, quiet=True, d=d)
+    # the receiver is reserved first, so two starts can never pick the same UDP port
+    with H.lock:
+        port = stream_port()
+        s = StreamReceiver(dev, port, fps, "?")
+        STREAMS[dev] = s
+    try:
+        rc, out, err = ssh_run(d, "sh -s -- %s" % shlex.quote(want), inp=STREAM_PROBE_SH.encode(), timeout=30)
+        f = out.decode().split()
+        if rc != 0 or len(f) < 3 or f[0] != "live":
+            raise ApiError(500, "stream probe failed: %s" % err.decode("utf-8", "replace").strip()[-200:])
+        mode, uid = f[1], f[2]
+        if mode == "none":
+            raise ApiError(400, "no live capture route on the device (needs grim, /dev/dri or /dev/fb0)")
+        ip = server_ip_for(d["host"])
+        if not ip:
+            raise ApiError(500, "cannot find the hub's address on the way to the device")
+        if mode == "fb":
+            name, remote = "fbstream-aarch64", "/tmp/fbstream"
+            args = [remote, ip, str(port), str(fps)]
+        else:
+            name, remote = "dhstream-aarch64", "/tmp/dhstream"
+            args = [remote, ip, str(port), str(fps), mode]
+            if mode in ("way", "wlr"):
+                if len(f) < 5:
+                    raise ApiError(500, "stream probe gave no compositor socket")
+                args += [f[3], f[4]]
+            elif mode == "drm":
+                args += re.findall(r"\d+", d.get("screen") or "")[:2]
+        s.mode = mode
+        upload_streamer(d, name, remote)
+        s.start()
+        for _ in range(50):                 # the receiver binds in its thread; fail loudly if it cannot
+            if s.bound or s.err:
+                break
+            time.sleep(0.02)
+        if s.err:
+            raise ApiError(500, s.err)
+        pre = "" if uid == "0" else "sudo -n "
+        inner = "exec %s%s 2>/tmp/.dhstream.log" % (pre, " ".join(shlex.quote(x) for x in args))
+        run = ("pkill dhstream 2>/dev/null; pkill fbstream 2>/dev/null; sleep 0.2; "
+               "nohup sh -c %s >/dev/null 2>&1 &" % shlex.quote(inner))
+        try:
+            rc, out2, err2 = ssh_run(d, run, timeout=15)
+        except subprocess.TimeoutExpired:
+            rc, err2 = -1, b"timed out"
+        if rc != 0:
+            raise ApiError(500, "starting the streamer on the device failed: %s" %
+                           err2.decode("utf-8", "replace").strip()[-200:])
+        # report the first frames straight away so the UI knows the route is alive
+        end = now() + 8
+        while now() < end and s.frame is None:
+            time.sleep(0.3)
+        if s.frame is None:
+            raise ApiError(500, "the %s route started but sent no frames after 8 s — this device may not "
+                                "support it; pick another backend in the device's settings" % mode)
+        w, h, _ = s.cfg or (0, 0, 0)
+        fell_back = want != "auto" and mode != want
+        if fell_back:
+            log("stream", dev, "asked for %s, device offers %s" % (want, mode))
+        event(dev, "stream", "live stream (%s, %d fps) by %s" % (mode, fps, c["name"]), c["name"])
+        return with_notices(c, {"ok": True, "mode": mode, "requested": want, "fell_back": fell_back,
+                                "port": port, "fps": fps, "w": w, "h": h})
+    except BaseException:
+        stream_stop(dev, quiet=True, d=d)
+        raise
+
+
+@route("GET", r"/api/devices/([a-z0-9_-]+)/live")
+def r_live_status(body, q, dev):
+    need_device(dev)
+    s = STREAMS.get(dev)
+    if not s:
+        return {"ok": True, "active": False}
+    st = s.status()
+    # "no frames" is normal on a static screen; only the keepalive going quiet means the streamer died
+    if "log" in q and (st["pkt_age"] if st["pkt_age"] is not None else 0) > 4:
+        d = need_device(dev)
+        _, out, _ = ssh_run(d, "tail -c 400 /tmp/.dhstream.log 2>/dev/null", timeout=10)
+        st["device_log"] = out.decode("utf-8", "replace").strip()
+
+    return {"ok": True, "active": True, **st}
+
+
+@route("GET", r"/api/devices/([a-z0-9_-]+)/live/frame")
+def r_live_frame(body, q, dev):
+    d = need_device(dev)
+    s = STREAMS.get(dev)
+    out = s.image(d) if s else None
+    if not out:
+        raise ApiError(404, "no live frame yet")
+    return out
+
+
+@route("POST", r"/api/devices/([a-z0-9_-]+)/live/stop")
+def r_live_stop(body, q, dev):
+    d = need_device(dev)
+    c = caller(body)
+    stream_stop(dev, d=d)
+    event(dev, "stream", "live stream stopped by %s" % c["name"], c["name"])
+    return with_notices(c, {"ok": True, "active": False})
+
+
+def stop_streams_on_exit():
+    """Down shut-down cleanup: the leak cap on the device (a streamer left running burns CPU for nothing)."""
+    with H.lock:
+        items = list(STREAMS.items())
+        STREAMS.clear()
+    for dev, s in items:
+        s.close()
+    kill = "pkill dhstream 2>/dev/null; pkill fbstream 2>/dev/null; true"
+    for dev in [dev for dev, _ in items]:
+        d = H.devices.get(dev)
+        if d:
+            try:
+                ssh_run(d, kill, timeout=5)
+            except Exception:
+                pass
+    # tear down any lingering input sessions
+    with H.lock:
+        devs = [dev for dev, r in H.rt.items() if r.get("input")]
+    for dev in devs:
+        try:
+            _input_teardown(dev, H.rt[dev]["input"])
+        except Exception:
+            pass
+
+
+
 
 
 @route("POST", r"/api/devices/([a-z0-9_-]+)/screenshot")
@@ -4134,6 +4812,299 @@ def r_console_log(body, q, dev):
     return {"ok": True, "seq": c["seq"], "lines": [l for l in c["lines"] if l["seq"] > since][-1000:]}
 
 
+# ---------------------------------------------------------------- remote input (keyboard + gamepad over a UDP port on the device)
+INPUT_HELPER = os.path.join(HERE, "helper", "dhinput-aarch64")
+INPUT_PORT_BASE = 41000
+
+
+def _input_session(d):
+    return H.rt.setdefault(d["id"], {}).get("input")
+
+
+def _input_teardown(dev, s):
+    d = H.devices.get(dev)
+    try:
+        sock = s.get("sock")
+        if sock is not None:
+            try:
+                sock.sendto(b"DHIN" + struct.pack("<IHH", s["secret"], 1, 6), (s["host"], s["port"]))
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+    except Exception:
+        pass
+    p = s.get("proc")
+    if p is not None:
+        try:
+            p.terminate()
+            p.wait(timeout=3)
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+    # make sure nothing lingers on the device (SIGHUP may not reach it)
+    if d is not None:
+        try:
+            ssh_run(d, "pkill -f /tmp/dhinput 2>/dev/null; true", timeout=8)
+        except Exception:
+            pass
+    with H.lock:
+        H.rt.setdefault(dev, {}).pop("input", None)
+    event(dev, "input", "input session stopped", who="hub")
+
+
+def _input_probe_arch(d):
+    rc, out, err = ssh_run(d, "uname -m", timeout=15)
+    if rc != 0:
+        raise ApiError(503, "could not reach the device (%s)" % (err.decode("utf-8", "replace").strip() or "ssh failed"))
+    return out.decode("utf-8", "replace").strip()
+
+
+def _input_upload(d):
+    if not os.path.exists(INPUT_HELPER):
+        raise ApiError(500, "input helper binary is missing on the hub (helper/dhinput-aarch64)")
+    remote = "/tmp/dhinput"
+    # stream the file over the shared connection directly to its final path
+    cmd = ('P=%s; S=""; D="$(dirname "$P")"; [ "$(id -u)" = 0 ] || [ -w "$(dirname "$D")" ] || S="sudo -n"; '
+           '$S mkdir -p "$D" && exec $S sh -c \'cat > "$1"\' sh "$P"') % shlex.quote(remote)
+    p = subprocess.Popen(ssh_args(d, cmd), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        with open(INPUT_HELPER, "rb") as f:
+            while True:
+                chunk = f.read(1 << 20)
+                if not chunk:
+                    break
+                p.stdin.write(chunk)
+        p.stdin.close()
+    except BrokenPipeError:
+        pass
+    rc = p.wait()
+    if rc != 0:
+        err = p.stderr.read().decode("utf-8", "replace").strip()
+        raise ApiError(500, "could not upload the input helper: %s" % (err or "ssh exit %d" % rc))
+    ssh_run(d, "chmod 755 %s" % shlex.quote(remote), timeout=15)
+    return remote
+
+
+@route("POST", r"/api/devices/([a-z0-9_-]+)/input/start")
+def r_input_start(body, q, dev):
+    d = need_device(dev)
+    if rt(dev)["master"]["state"] != "up" and d["auth"] != "key":
+        raise ApiError(503, "the shared SSH connection to %s is %s" % (dname(d), rt(dev)["master"]["state"]))
+    s = _input_session(d)
+    if s is not None and s.get("proc") is not None and s["proc"].poll() is None:
+        return {"ok": True, "port": s["port"], "secret": s["secret"], "reused": True,
+                "device": dname(d)}
+    # clean up any stale session
+    if s is not None:
+        _input_teardown(dev, s)
+    arch = _input_probe_arch(d)
+    if arch != "aarch64":
+        raise ApiError(400, "input forwarding needs a 64-bit (aarch64) handheld; this one reports %s" % arch)
+    # make sure uinput is available
+    rc, out, _ = ssh_run(d, "sh -s", inp=b"ls -l /dev/uinput 2>/dev/null; modprobe uinput 2>/dev/null; ls /dev/uinput 2>/dev/null",
+                         timeout=15)
+    if b"uinput" not in (out or b""):
+        raise ApiError(500, "the handheld has no /dev/uinput — input forwarding cannot start")
+    # kill any stale helper from a previous crashed session
+    try:
+        ssh_run(d, "pkill -f /tmp/dhinput 2>/dev/null; true", timeout=8)
+    except Exception:
+        pass
+    remote = _input_upload(d)
+    # try a few ports
+    last_err = ""
+    for attempt in range(5):
+        port = INPUT_PORT_BASE + (hash(dev) % 100) * 5 + attempt
+        # avoid colliding with an already-running session on the same hub
+        cmd = "exec %s %d 900" % (remote, port)
+        p = subprocess.Popen(ssh_args(d, cmd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, bufsize=0)
+        # wait for READY line (up to 20s)
+        buf = b""
+        deadline = time.time() + 20
+        ready = None
+        while time.time() < deadline:
+            if p.poll() is not None:
+                break
+            # non-blocking read one byte
+            import select as _sel
+            r, _, _ = _sel.select([p.stdout], [], [], 0.2)
+            if r:
+                ch = p.stdout.read(1)
+                if not ch:
+                    break
+                buf += ch
+                if b"\n" in buf:
+                    line = buf.split(b"\n", 1)[0]
+                    if line.startswith(b"READY "):
+                        ready = line.split()
+                        break
+                    if line.startswith(b"ERROR "):
+                        last_err = line.decode("utf-8", "replace")
+                        break
+        if ready and len(ready) >= 3:
+            try:
+                secret = int(ready[1])
+            except ValueError:
+                secret = 0
+            rport = int(ready[2])
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(0.5)
+            with H.lock:
+                H.rt.setdefault(dev, {})["input"] = {
+                    "proc": p, "secret": secret, "port": rport, "host": d["host"],
+                    "sock": sock, "started": now(),
+                }
+            event(dev, "input", "input session started (udp %d)" % rport, who=None)
+            return {"ok": True, "port": rport, "device": dname(d)}
+        # failure: kill and retry next port
+        try:
+            p.kill()
+        except Exception:
+            pass
+        try:
+            p.wait(timeout=3)
+        except Exception:
+            pass
+        if last_err:
+            # port collision or missing uinput — don't spam retries on a hard error
+            if "bind" not in last_err.lower() and "uinput" not in last_err.lower():
+                raise ApiError(500, last_err)
+            last_err = ""
+    raise ApiError(500, "could not start the input helper: %s" % (last_err or "no READY from the device"))
+
+
+@route("POST", r"/api/devices/([a-z0-9_-]+)/input/event")
+def r_input_event(body, q, dev):
+    d = need_device(dev)
+    s = _input_session(d)
+    if s is None or s.get("proc") is None or s["proc"].poll() is not None:
+        if s is not None:
+            _input_teardown(dev, s)
+        raise ApiError(409, "input session is not running — start it first")
+    evs = body.get("ev") or []
+    if not isinstance(evs, list):
+        raise ApiError(400, "ev must be a list")
+    # type 5 = ping
+    ping_seq = body.get("ping")
+    # build datagram
+    import struct as _st
+    payload = b"DHIN" + _st.pack("<IHH", s["secret"], len(evs) + (1 if ping_seq is not None else 0), 0)
+    # rebuild count correctly
+    n = len(evs) + (1 if ping_seq is not None else 0)
+    payload = b"DHIN" + _st.pack("<IH", s["secret"], n)
+    for e in evs:
+        if not isinstance(e, list) or not e:
+            continue
+        t = int(e[0])
+        if t == 1 and len(e) >= 3:          # key code val
+            payload += _st.pack("<BBH", 1, 0, 0)  # placeholder, redo below
+        # redo properly:
+    # (rebuild cleanly)
+    payload = b"DHIN" + _st.pack("<IH", s["secret"], n)
+    for e in evs:
+        if not isinstance(e, (list, tuple)) or len(e) < 2:
+            continue
+        t = int(e[0])
+        if t == 1 and len(e) >= 3:            # key: code, val
+            payload += _st.pack("<BHI", 1, int(e[1]) & 0xffff, 0)[:3] + bytes([int(e[2]) & 0xff])
+            # simpler: type(1)+code u16+val u8
+            payload = payload[:-4] + _st.pack("<BHB", 1, int(e[1]) & 0xffff, int(e[2]) & 0xff)
+        elif t == 2 and len(e) >= 3:          # button
+            payload += _st.pack("<BHB", 2, int(e[1]) & 0xffff, int(e[2]) & 0xff)
+        elif t == 3 and len(e) >= 3:          # abs: axis u8, val i32
+            payload += _st.pack("<BBi", 3, int(e[1]) & 0xff, int(e[2]))
+        elif t == 4:
+            payload += _st.pack("<B", 4)
+        else:
+            # skip
+            n -= 1
+    if ping_seq is not None:
+        payload = payload[:-2] + _st.pack("<H", n - (1 if ping_seq is None else 0)) + payload[len(payload):] if False else payload
+    # fix count field (offset 8, 2 bytes) based on actual appended events is complex; recompute by counting:
+    # Easiest: rebuild from scratch cleanly:
+    ev_bytes = bytearray()
+    cnt = 0
+    for e in evs:
+        if not isinstance(e, (list, tuple)) or len(e) < 2:
+            continue
+        t = int(e[0])
+        if t == 1 and len(e) >= 3:
+            ev_bytes += _st.pack("<BHB", 1, int(e[1]) & 0xffff, int(e[2]) & 0xff); cnt += 1
+        elif t == 2 and len(e) >= 3:
+            ev_bytes += _st.pack("<BHB", 2, int(e[1]) & 0xffff, int(e[2]) & 0xff); cnt += 1
+        elif t == 3 and len(e) >= 3:
+            ev_bytes += _st.pack("<BBi", 3, int(e[1]) & 0xff, int(e[2])); cnt += 1
+        elif t == 4:
+            ev_bytes += _st.pack("<B", 4); cnt += 1
+    if ping_seq is not None:
+        ev_bytes += _st.pack("<BI", 5, int(ping_seq) & 0xffffffff); cnt += 1
+    payload = b"DHIN" + _st.pack("<IH", s["secret"], cnt) + bytes(ev_bytes)
+    sock = s["sock"]
+    try:
+        sock.sendto(payload, (s["host"], s["port"]))
+    except OSError as ex:
+        raise ApiError(500, "could not send input packet: %s" % ex)
+    rtt = None
+    if ping_seq is not None:
+        try:
+            data, _ = sock.recvfrom(64)
+            if data[:4] == b"DHPO" and len(data) >= 12:
+                rtt = (now() - float(body.get("ping_t", now()))) * 1000.0
+        except socket.timeout:
+            rtt = None
+    res = {"ok": True, "sent": len(evs)}
+    if rtt is not None:
+        res["rtt_ms"] = round(rtt, 1)
+    return res
+
+
+@route("POST", r"/api/devices/([a-z0-9_-]+)/input/stop")
+def r_input_stop(body, q, dev):
+    d = need_device(dev)
+    s = _input_session(d)
+    if s is not None:
+        _input_teardown(dev, s)
+    return {"ok": True, "device": dname(d)}
+
+@route("POST", r"/api/devices/([a-z0-9_-]+)/input/ping")
+def r_input_ping(body, q, dev):
+    d = need_device(dev)
+    s = _input_session(d)
+    if s is None or s["proc"].poll() is not None:
+        raise ApiError(409, "input session is not running")
+    import struct as _st
+    sock = s["sock"]
+    seq = int(body.get("seq", 0)) & 0xffffffff
+    payload = b"DHIN" + _st.pack("<IH", s["secret"], 1) + _st.pack("<BI", 5, seq)
+    t0 = now()
+    try:
+        sock.sendto(payload, (s["host"], s["port"]))
+        data, _ = sock.recvfrom(64)
+    except socket.timeout:
+        raise ApiError(504, "no pong from the device (input helper not responding)")
+    if not (data[:4] == b"DHPO"):
+        raise ApiError(500, "bad pong")
+    rtt = (now() - t0) * 1000.0
+    return {"ok": True, "rtt_ms": round(rtt, 1), "seq": seq}
+
+@route("POST", r"/api/devices/([a-z0-9_-]+)/input/status")
+def r_input_status(body, q, dev):
+    d = need_device(dev)
+    s = _input_session(d)
+    if s is None:
+        return {"ok": True, "running": False}
+    alive = s["proc"].poll() is None
+    if not alive:
+        _input_teardown(dev, s)
+        return {"ok": True, "running": False}
+    return {"ok": True, "running": True, "port": s["port"], "started": s["started"]}
+
 @route("POST", r"/api/devices/([a-z0-9_-]+)/console/append")
 def r_console_append(body, q, dev):
     need_device(dev)
@@ -4500,6 +5471,7 @@ def main():
     try:
         HTTPD.serve_forever()
     finally:
+        stop_streams_on_exit()
         save_state()
         log("DeviceHub stopped")
 
