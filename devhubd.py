@@ -2391,7 +2391,7 @@ mkdir -p "$TMPDIR" 2>/dev/null || $H mkdir -p "$TMPDIR"
 $H ./harbourmaster --no-check --no-colour install "$Z" </dev/null 2>&1
 rc=$?
 $S rm -rf "$PM/.devhub-staging"
-echo "DEVHUB-RC=$rc"
+echo; echo "DEVHUB-RC=$rc"     # harbourmaster's last line may lack its newline
 """
 
 
@@ -2668,9 +2668,11 @@ def install_job(job, d, up, refresh, took_lock, who):
             text = raw.decode("utf-8", "replace").replace("\r", "\n")
             text = LOGURU_ANY.sub(lambda m: "\n" + m.group(0), text)      # a log line glued to the progress bar
             for line in text.split("\n"):
-                if line.startswith("DEVHUB-RC="):
-                    hm_rc = int(line[10:] or 1)
-                    continue
+                if "DEVHUB-RC=" in line:      # also when glued to harbourmaster's last line
+                    line, _, code = line.partition("DEVHUB-RC=")
+                    hm_rc = int(code.strip() or 1) if code.strip().isdigit() else 1
+                    if not line.strip():
+                        continue
                 if HM_PROGRESS.match(line.strip()):    # the download's progress bar: the step, not the log
                     job["step"] = "harbourmaster downloads it: " + line.strip().split("] - ", 1)[1]
                     continue
