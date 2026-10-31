@@ -337,6 +337,7 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
 <dialog id="condlg"><form method="dialog">
   <div class="dh"><h2 id="contitle">Console</h2><span class="spacer"></span>
     <label class="chk"><input type="checkbox" id="confollow" checked> follow</label>
+    <button type="button" class="small" id="consave" title="save the whole file from the device (the sessions' commands: what is shown)">Save</button>
     <button type="button" class="small" id="conclear">Clear</button>
     <button type="button" class="small" data-close>Close</button></div>
   <div class="db">
@@ -1383,6 +1384,24 @@ async function loadConsoleSources() {
   $("#coninfo").textContent = j.ok === false ? j.error : app ? `Running now: ${app.name} (pid ${app.pid})` : "No app running right now.";
   switchConsole(first);
 }
+function saveBlob(blob, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+$("#consave").onclick = async () => {
+  if (!con) return;
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
+  if (con.src === "@sessions") return saveBlob(new Blob([con.text], { type: "text/plain" }), `${con.dev}-sessions-${stamp}.txt`);
+  const b = $("#consave"); b.disabled = true;
+  try {   // the whole file, read from the device (the view only holds its tail)
+    const r = await fetch(`/api/devices/${con.dev}/file?path=${encodeURIComponent(con.src)}`, { headers: { "X-DevHub-Token": TOKEN } });
+    if ((r.headers.get("Content-Type") || "").includes("json")) { const j = await r.json(); return snack(j.msg || j.error || "could not read the file", true); }
+    const base = con.src.split("/").filter(Boolean), name = base.slice(-2).join("_");   // e.g. Chess_log.txt
+    saveBlob(await r.blob(), `${con.dev}-${name}`);
+  } catch (e) { snack("could not read the file: " + e, true); }
+  finally { b.disabled = false; }
+};
 function switchConsole(src) {
   con.src = src; con.seq = 0; con.offset = -1; con.text = "";
   $("#conpre").textContent = "";

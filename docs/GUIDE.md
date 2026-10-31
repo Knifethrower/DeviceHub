@@ -86,7 +86,7 @@ agents see [AGENTS.md](AGENTS.md).
   allow Python on private networks. On by default on Linux, off under WSL. `devhub pull` always copies over SSH.
 - **Installed ports** (card button, or `devhub ports DEV`): read-only list from each port's `port.json`, plus
   launchers PortMaster does not manage and installed runtimes. The *Log* column opens a port's log files in the
-  Console, following them live.
+  Console, following them live; *Save* there downloads the whole file from the device.
 
 ## Watching
 
