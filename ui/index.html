@@ -295,6 +295,38 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
   </div>
 </dialog>
 
+<dialog id="fpsdlg" style="width:min(820px, calc(100vw - 32px))"><form method="dialog">
+  <div class="dh"><h2 id="fpstitle">FPS</h2><span class="spacer"></span>
+    <button type="button" class="small" id="fpsback" hidden>← Live</button>
+    <button type="button" class="small" data-close>Close</button></div>
+  <div class="db">
+    <div id="fpslive">
+      <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+        <span id="fpsbig" style="font-size:44px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1">–</span>
+        <span class="sub" id="fpssrc">starting the monitor on the device…</span>
+      </div>
+      <canvas id="fpschart" style="width:100%;height:170px;display:block;margin:8px 0 4px;border:1px solid var(--line);border-radius:8px;background:var(--panel2)"></canvas>
+      <div class="sub" id="fpsrows" style="font-family:var(--mono);font-size:12px;white-space:pre-wrap"></div>
+      <label class="chk" style="margin-top:8px" title="adds two lines to PortMaster's control.txt (every port reads it): ports launched from the front end then load DeviceHub's frame counter. The lines do nothing after a reboot; switching this off removes them."><input type="checkbox" id="fpshook"> Count frames inside ports launched from PortMaster (per program; ports that set their own LD_PRELOAD aren't counted)</label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px">
+        <input id="fpslabel" placeholder="session label, e.g. Chess: menu → game" spellcheck="false"
+          style="flex:1;min-width:200px;padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel2)">
+        <button type="button" class="small" id="fpsstart">Start tracking</button>
+        <button type="button" class="small danger" id="fpsstop" hidden>Stop tracking</button>
+      </div>
+      <div class="sub" id="fpssess"></div>
+    </div>
+    <div id="fpsview" hidden>
+      <div class="sub" id="fpsvsum"></div>
+      <canvas id="fpsvchart" style="width:100%;height:220px;display:block;margin:8px 0;border:1px solid var(--line);border-radius:8px;background:var(--panel2)"></canvas>
+      <div style="display:flex;gap:6px"><button type="button" class="small" id="fpscsv">Download CSV</button>
+        <button type="button" class="small danger" id="fpsdel">Delete session</button></div>
+    </div>
+    <h3 style="margin:14px 0 4px;font-size:14px">Tracked sessions</h3>
+    <div id="fpslist" class="sub"></div>
+  </div>
+</form></dialog>
+
 <dialog id="galdlg"><form method="dialog">
   <div class="dh"><h2 id="galtitle">Screenshots</h2><span class="spacer"></span>
     <button type="button" class="small" id="galback" hidden>← All screenshots</button>
@@ -573,6 +605,7 @@ function card(d) {
       <button class="small" data-act="shot" ${up ? "" : "disabled"}>Screenshot</button>
       <button class="small" data-act="live" ${up ? "" : "disabled"} title="watch this screen in the streamer: it sends only the frames that changed, so an idle menu costs almost nothing">Live screen</button>
       <button class="small" data-act="shots" title="past screenshots of this device">Screenshots</button>
+      <button class="small" data-act="fps" title="frame rate on the screen and inside ports, live and as tracked sessions">FPS</button>
       <button class="small" data-act="copyssh">Copy SSH</button>
       <button class="small" data-act="edit">Edit</button>
     </div>
@@ -904,6 +937,7 @@ document.addEventListener("click", async e => {
     case "shot": return takeShot(dev);
     case "live": return openLive(dev);
     case "shots": return openGallery(dev);
+    case "fps": return openFps(d);
     case "install": return openInstall(d);
     case "ports": return openPorts(d);
     case "console": return openConsole(d);
@@ -1203,6 +1237,128 @@ if (/^#dev=/.test(location.hash)) {
 
 // ------------------------------------------------------------ console: what the device and sessions print
 let con = null;   // {dev, src: "@sessions" | path, seq, offset, timer, text}
+// ---- FPS: live reading (the device's monitor runs while this is open), tracked sessions
+let fpsv = null;
+function fpsChart(canvas, samples, span) {   // samples: [{t, fps, worst}], span: seconds shown (0 = all)
+  const css = getComputedStyle(document.documentElement), dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const g = canvas.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  if (!samples.length) return;
+  const t1 = samples[samples.length - 1].t, t0 = span ? t1 - span * 1000 : samples[0].t;
+  const top = Math.max(65, ...samples.map(s => s.fps)) * 1.08, L = 30, B = h - 16;
+  const x = t => L + (w - L - 6) * (span || t1 > t0 ? (t - t0) / Math.max(1, t1 - t0) : 1), y = v => B - (B - 6) * v / top;
+  g.font = "11px " + css.getPropertyValue("--mono"); g.fillStyle = css.getPropertyValue("--faint"); g.strokeStyle = css.getPropertyValue("--line");
+  for (const v of [30, 60, 90, 120].filter(v => v < top)) {
+    g.beginPath(); g.moveTo(L, y(v)); g.lineTo(w - 6, y(v)); g.stroke(); g.fillText(String(v), 4, y(v) + 4);
+  }
+  const span_s = Math.round((t1 - t0) / 1000);
+  g.fillText(span_s >= 120 ? Math.round(span_s / 60) + " min" : span_s + " s", L, h - 3);
+  g.strokeStyle = css.getPropertyValue("--accent"); g.lineWidth = 1.6; g.beginPath();
+  let started = false;
+  for (const s of samples) {
+    if (s.t < t0) continue;
+    if (!started) { g.moveTo(x(s.t), y(s.fps)); started = true; } else g.lineTo(x(s.t), y(s.fps));
+  }
+  g.stroke();
+}
+function openFps(d) {
+  fpsv = { dev: d.id, name: d.name, timer: null, view: null };
+  $("#fpstitle").textContent = `FPS · ${d.name}`;
+  $("#fpsbig").textContent = "–"; $("#fpssrc").textContent = "starting the monitor on the device…";
+  $("#fpsrows").textContent = ""; $("#fpssess").textContent = "";
+  $("#fpslive").hidden = false; $("#fpsview").hidden = true; $("#fpsback").hidden = true;
+  $("#fpshook").disabled = true;
+  $("#fpsdlg").showModal();
+  api("GET", `/api/devices/${d.id}/fps/hook`).then(j => {
+    if (!fpsv || fpsv.dev !== d.id) return;
+    $("#fpshook").checked = !!j.hook; $("#fpshook").disabled = j.ok === false;
+    if (j.ok === false) $("#fpshook").parentElement.title = j.error;
+  });
+  fpsList();
+  pollFps();
+}
+async function pollFps() {
+  if (!fpsv || !$("#fpsdlg").open) return;
+  const dev = fpsv.dev;
+  let j;
+  try { j = await api("GET", `/api/devices/${dev}/fps?n=120`); }
+  catch (e) { j = { ok: false, error: "DeviceHub is not answering (restarting?)" }; }   // keep polling through restarts
+  if (fpsv && fpsv.dev === dev) fpsv.timer = setTimeout(pollFps, 1000);
+  if (!fpsv || fpsv.dev !== dev || !$("#fpsdlg").open) return;
+  const last = j.samples && j.samples[j.samples.length - 1];
+  if (j.ok === false || (!last && j.error)) {
+    $("#fpssrc").textContent = j.error || "no reading";
+  } else if (last) {
+    $("#fpsbig").textContent = last.fps ? last.fps.toFixed(1) : "0";
+    $("#fpssrc").textContent = last.fps ? `fps · ${last.kind === "app" ? "counted in " + last.src : "screen flips (" + last.src + ")"} · worst frame ${(last.worst || 0).toFixed(1)} ms`
+      : "nothing drawn this second (idle screen)";
+    const rows = [];
+    for (const a of last.apps || []) rows.push(`${String(a.fps.toFixed(1)).padStart(6)} fps  ${a.comm} (pid ${a.pid}, preload)  worst ${a.worst.toFixed(1)} ms`);
+    for (const f of last.flip || []) rows.push(`${String(f.fps.toFixed(1)).padStart(6)} fps  ${f.src} (page flips)  worst ${f.worst.toFixed(1)} ms`);
+    $("#fpsrows").textContent = rows.join("\n");
+    if ($("#fpsview").hidden) fpsChart($("#fpschart"), j.samples, 120);
+  }
+  if (j.ok === false) return;
+  const s = j.session;
+  $("#fpsstart").hidden = !!s; $("#fpsstop").hidden = !s; $("#fpslabel").disabled = !!s;
+  $("#fpssess").textContent = s ? `● Recording "${s.label}" (by ${s.who}) · ${s.seconds} s · avg ${s.avg} · min ${s.min ?? "–"} · worst frame ${s.worst_ms} ms` : "";
+  if (fpsv.wasRec && !s) fpsList();
+  fpsv.wasRec = !!s;
+}
+async function fpsList() {
+  if (!fpsv) return;
+  const j = await api("GET", `/api/fps/sessions?dev=${fpsv.dev}`);
+  const ss = (j.sessions || []);
+  $("#fpslist").innerHTML = ss.length ? `<table class="ports" style="font-size:12.5px"><tr><th>When</th><th>Label</th><th>Length</th><th>Avg</th><th>1% low</th><th>Min</th><th>Worst frame</th><th></th></tr>` +
+    ss.map(s => `<tr><td>${esc(new Date(s.started * 1000).toLocaleString())}</td><td>${esc(s.label)}${s.source ? `<div class="sub">counted from ${esc(s.source)}</div>` : ""}</td>
+      <td>${s.seconds >= 120 ? Math.round(s.seconds / 60) + " min" : s.seconds + " s"}</td><td>${s.avg}</td><td>${s.running ? "–" : s.low1}</td><td>${s.min ?? "–"}</td><td>${s.worst_ms} ms</td>
+      <td>${s.running ? "recording" : `<button type="button" class="small" data-fpsview="${esc(s.id)}">View</button>`}</td></tr>`).join("") + "</table>"
+    : "None yet. Start tracking above: DeviceHub records one reading per second until you stop it.";
+}
+async function fpsView(id) {
+  const j = await api("GET", `/api/fps/sessions/${id}`);
+  if (j.ok === false) return snack(j.error);
+  fpsv.view = id;
+  const s = j.summary;
+  $("#fpslive").hidden = true; $("#fpsview").hidden = false; $("#fpsback").hidden = false;
+  $("#fpsvsum").innerHTML = `<b>${esc(s.label)}</b> · ${esc(new Date(s.started * 1000).toLocaleString())} · ${s.seconds} s · by ${esc(s.who || "?")}<br>
+    avg <b>${s.avg}</b> fps · 1% low <b>${s.low1}</b> · min ${s.min} · worst frame ${s.worst_ms} ms · counted from ${esc(s.source || "–")}${s.end_note ? ` · ${esc(s.end_note)}` : ""}`;
+  fpsChart($("#fpsvchart"), j.samples, 0);
+}
+$("#fpslist").addEventListener("click", e => { const b = e.target.closest("[data-fpsview]"); if (b) fpsView(b.dataset.fpsview); });
+$("#fpsback").onclick = () => { fpsv.view = null; $("#fpslive").hidden = false; $("#fpsview").hidden = true; $("#fpsback").hidden = true; };
+$("#fpsstart").onclick = async () => {
+  const j = await api("POST", `/api/devices/${fpsv.dev}/fps/session`, { action: "start", label: $("#fpslabel").value.trim() });
+  if (j.ok === false) return snack(j.error || j.msg);
+  $("#fpslabel").value = ""; fpsList();
+};
+$("#fpsstop").onclick = async () => {
+  const j = await api("POST", `/api/devices/${fpsv.dev}/fps/session`, { action: "stop" });
+  if (j.ok === false) return snack(j.error || j.msg);
+  await fpsList(); fpsView(j.summary.id);
+};
+$("#fpshook").onchange = async e => {
+  const on = e.target.checked; e.target.disabled = true;
+  const j = await api("POST", `/api/devices/${fpsv.dev}/fps/hook`, { on });
+  e.target.disabled = false;
+  if (j.ok === false) { e.target.checked = !on; return snack(j.error || j.msg); }
+  e.target.checked = !!j.hook;
+  snack(j.hook ? "Ports launched from PortMaster now count their frames (until you switch this off or the device reboots)." : "Frame counting in ports switched off.");
+};
+$("#fpscsv").onclick = async () => {
+  const r = await fetch(`/api/fps/sessions/${fpsv.view}?csv=1`, { headers: { "X-DevHub-Token": TOKEN } });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = fpsv.view + ".csv"; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+};
+$("#fpsdel").onclick = async () => {
+  if (!confirm("Delete this FPS session?")) return;
+  const j = await api("DELETE", `/api/fps/sessions/${fpsv.view}`);
+  if (j.ok === false) return snack(j.error);
+  $("#fpsback").onclick(); fpsList();
+};
+$("#fpsdlg").addEventListener("close", () => { if (fpsv) clearTimeout(fpsv.timer); fpsv = null; });
+
 function openConsole(d, path) {   // path: open on that file (a port's log from Installed ports)
   con = { dev: d.id, src: "@sessions", seq: 0, offset: -1, text: "", timer: null, want: path || null };
   $("#contitle").textContent = `Console · ${d.name}`;

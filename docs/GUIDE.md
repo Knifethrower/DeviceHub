@@ -90,6 +90,23 @@ agents see [AGENTS.md](AGENTS.md).
 
 ## Watching
 
+- **FPS** (card button, or `devhub fps DEV`): the frame rate, live, with a two-minute graph. Two counters:
+  - *Screen flips*, for any program with no setup: a small monitor on the device (`dhfps-mon`, copied to
+    `/tmp/devhub-fps`) watches which buffer the screen shows, DRM planes or the framebuffer's pan offset, and
+    counts each change. Under a compositor (sway on ROCKNIX) this is the compositor's rate. An idle menu may draw
+    fewer frames (Knulli's EmulationStation drops to ~24 fps when nothing moves).
+  - *Inside a program*: `libdhfps.so`, loaded with `LD_PRELOAD`, counts each `eglSwapBuffers` (also when SDL2,
+    box64 or gl4es look it up at run time) per process. *Count frames inside ports launched from PortMaster* adds
+    two lines to PortMaster's `control.txt`, which every port reads, so ports started from the front end load it;
+    they do nothing after a reboot, and switching the box off removes them. A port that sets its own `LD_PRELOAD`
+    replaces it, so it is only counted by its screen flips. For your own launches: `devhub fps DEV preload`.
+
+  The monitor runs only while the dialog is open (or a session records) and stops ~20 s after. **Tracked
+  sessions** (*Start tracking*, or `devhub fps DEV start "label"`) record one reading per second until stopped:
+  average, 1% low (the slowest 1% of seconds), minimum and the longest single frame, with a graph and a CSV
+  download. A session interrupted by a DeviceHub restart is closed with what it recorded. Sessions are kept in
+  `data/fps/`. Rebuild the device tools with `Other_src/dhfps/build.sh`.
+
 - **Console** (card button): agents' `devhub run` commands on that device with their output, the running app's
   stdout/stderr, the port's `log.txt`, front-end launch logs, the PortMaster log, recent `.log` files in `/tmp`, or
   any path you type. Read-only: one short `tail` per second while the dialog is open.

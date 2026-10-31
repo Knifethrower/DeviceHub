@@ -61,6 +61,20 @@ reads one. With *Send files over HTTP* on, the device downloads it from DeviceHu
 `PortMaster.zip` or runtime `.squashfs` is never copied this way: upload it and install it (below), so the device's
 own PortMaster installs it.
 
+## FPS
+
+| Call | Body | Notes |
+|---|---|---|
+| `GET /api/devices/<dev>/fps?n=120` | — | live readings (starts the device's monitor; it stops ~20 s after the last call) |
+| `POST /api/devices/<dev>/fps/session` | `action`: `start` (+ `label`) / `stop` | tracked session; `stop` returns the summary |
+| `GET /api/fps/sessions?dev=<dev>` | — | sessions, newest first (recording ones first) |
+| `GET /api/fps/sessions/<id>[?csv=1]` | — | a session's summary and per-second samples, or CSV |
+| `GET /api/devices/<dev>/fps/preload` | — | the `LD_PRELOAD` value that counts frames in a program you launch |
+| `POST /api/devices/<dev>/fps/hook` | `on`: bool | count frames in ports launched from PortMaster (lock needed) |
+
+A reading: `{"t": ms, "fps", "worst" (ms), "src", "kind": "app"|"flip"|"idle", "flip": [...], "apps": [...]}`.
+`fps` is the busiest program counted inside (`kind: app`), else the busiest screen-flip source.
+
 ## Device jobs
 
 | Call | Body | Notes |

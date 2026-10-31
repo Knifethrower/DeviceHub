@@ -75,6 +75,11 @@ devhub install DEV game.zip | runtime.squashfs | URL  install with the device's 
 devhub ports DEV                                      installed ports (read-only)
 devhub fe DEV start|stop|restart|status               front end (EmulationStation, ...)
 devhub shot DEV out.png                               screenshot of what is on screen
+devhub fps DEV [--for 30s]                            live frame rate, one line per second (no lock needed)
+devhub fps DEV start "label" / stop / list            tracked FPS session: avg, 1% low, min, worst frame
+devhub fps DEV preload                                LD_PRELOAD value that counts frames in your own launches
+devhub fps DEV hook on|off                            count frames in ports launched from PortMaster (lock needed;
+                                                      switch it off again before you release the device)
 eval "$(devhub env DEV)"; $DH_SSH 'uname -a'          shell variables for your own scripts (lock first)
 devhub log [DEV]                                      recent events
 devhub whoami                                         who DeviceHub thinks you are, what you hold

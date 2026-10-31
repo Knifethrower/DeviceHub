@@ -10,7 +10,7 @@ Passwords never leave this process except through a one-shot FIFO to ssh's askpa
 API never returns them. At rest they are encrypted: with Windows DPAPI (the Windows user) under WSL,
 with openssl and a key file only this user can read (data/secret.key) on Linux.
 """
-import base64, errno, hashlib, http.server, io, json, os, re, secrets, shlex, shutil, signal, socket
+import base64, collections, errno, hashlib, http.server, io, json, os, re, secrets, shlex, shutil, signal, socket
 import queue, struct, subprocess, sys, threading, time, traceback, urllib.parse, zipfile, zlib
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
@@ -151,7 +151,7 @@ SYSTEM_PROCS = {
     # firmware background services, not a game left open: dArkOS/ArkOS MIDI synth, exFAT/NTFS card mounts,
     # Windows network discovery (Knulli runs wsdd under python3), Bluetooth, mDNS
     "fluidsynth", "mount.exfat", "mount.exfat-fuse", "exfat-fuse", "mount.ntfs-3g", "ntfs-3g", "wsdd", "wsdd2",
-    "wsdd.py", "bluetoothd", "avahi-daemon", "filebrowser",
+    "wsdd.py", "bluetoothd", "knulli-bluetooth-agent", "avahi-daemon", "filebrowser",
     # a Linux desktop (laptop/PC test devices): X, the display manager and XFCE, not a port left running
     "Xorg", "X", "lightdm", "xfwm4", "xfce4-panel", "xfdesktop", "xfce4-session", "xfsettingsd", "xfconfd",
     "xfce4-power-manager", "xfce4-notifyd", "Thunar", "thunar", "panel-1-whiskermenu", "nm-applet", "polkitd",
@@ -5307,6 +5307,442 @@ def r_console_append(body, q, dev):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- FPS
+# fps/dhfps-mon-aarch64 runs on the device while someone watches (the UI's FPS dialog, `devhub fps`) or a tracked
+# session records: one JSON line per second with page flips (any program, no setup) and the frame counts of
+# programs running with fps/libdhfps-*.so (LD_PRELOAD). Sources: Other_src/dhfps (build.sh).
+FPS_REMOTE = "/tmp/devhub-fps"
+FPS_FILES = {"dhfps-mon": "dhfps-mon-aarch64", "libdhfps-aarch64.so": "libdhfps-aarch64.so",
+             "libdhfps-armhf.so": "libdhfps-armhf.so"}
+FPS_IDLE_S = 20          # a monitor nobody looks at (and no session) stops after this
+FPS_KEEP = 600           # seconds of samples kept in memory per device
+FPS_DIR = os.path.join(DATA, "fps")
+H.fps = {}               # dev -> {"thread", "proc", "samples", "seen", "session", "error", "hook"}
+H.fps_ver = None
+
+
+def fps_version():
+    if not H.fps_ver:
+        sha = hashlib.sha1()
+        for local in FPS_FILES.values():
+            with open(os.path.join(HERE, "fps", local), "rb") as f:
+                sha.update(f.read())
+        H.fps_ver = sha.hexdigest()[:12]
+    return H.fps_ver
+
+
+def fps_deploy(d):
+    """Put the monitor and the preload libraries in /tmp/devhub-fps on the device (again after a reboot or update)."""
+    ver = fps_version()
+    rc, out, _ = ssh_run(d, "cat %s/VERSION 2>/dev/null" % FPS_REMOTE, timeout=20)
+    if out.decode().strip() == ver:
+        return
+    ssh_run(d, "kill $(pidof dhfps-mon) 2>/dev/null; true", timeout=20)     # monitors of an older version
+    for name, local in FPS_FILES.items():
+        dest = "%s/%s" % (FPS_REMOTE, name)
+        with open(os.path.join(HERE, "fps", local), "rb") as f:
+            rc, _, err = ssh_run(d, "mkdir -p %s/apps && chmod 1777 %s %s/apps 2>/dev/null; cat > %s.part && "
+                                    "chmod 755 %s.part && mv -f %s.part %s" % (FPS_REMOTE, FPS_REMOTE, FPS_REMOTE,
+                                                                               dest, dest, dest, dest),
+                                 inp=f.read(), timeout=180)
+        if rc != 0:
+            raise RuntimeError("could not copy the FPS tools to the device: %s" % err.decode("utf-8", "replace").strip()[-160:])
+    ssh_run(d, "echo %s > %s/VERSION" % (ver, FPS_REMOTE), timeout=20)
+
+
+def fps_primary(j):
+    """The number to show for one second: the busiest program counted by the preload library, else the busiest
+    page-flip source, else 0 (nothing drawn)."""
+    apps = [a for a in j.get("apps") or [] if a.get("fps")]
+    if apps:
+        a = max(apps, key=lambda a: a["fps"])
+        return a["fps"], a.get("worst") or 0, a.get("comm") or "app", "app"
+    flips = [f for f in j.get("flip") or [] if f.get("fps")]
+    if flips:
+        f = max(flips, key=lambda f: f["fps"])
+        return f["fps"], f.get("worst") or 0, f.get("src") or "screen", "flip"
+    return 0.0, 0, "", "idle"
+
+
+def fps_state(dev):
+    with H.lock:
+        st = H.fps.get(dev)
+        if not st:
+            st = H.fps[dev] = {"thread": None, "proc": None, "samples": collections.deque(maxlen=FPS_KEEP),
+                               "seen": 0, "session": None, "error": "", "hook": None}
+        return st
+
+
+def fps_ensure(dev):
+    """Start the device's monitor if it isn't running."""
+    st = fps_state(dev)
+    with H.lock:
+        if st["thread"] and st["thread"].is_alive():
+            return st
+        st["error"] = ""
+        st["thread"] = threading.Thread(target=fps_watch, args=(dev,), daemon=True)
+        st["thread"].start()
+    return st
+
+
+def fps_wanted(st):
+    return bool(st["session"]) or now() - st["seen"] < FPS_IDLE_S
+
+
+def fps_watch(dev):
+    st = fps_state(dev)
+    while fps_wanted(st):
+        d = H.devices.get(dev)
+        if not d or rt(dev)["master"]["state"] != "up":
+            st["error"] = "no shared connection to the device"
+            if st["session"]:
+                fps_session_stop(dev, "the device went offline")
+            return
+        try:
+            fps_deploy(d)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            st["error"] = str(e)
+            if st["session"]:
+                fps_session_stop(dev, st["error"])
+            return
+        # stdin stays open and unused: when this hub goes away the monitor sees end of file and stops
+        p = subprocess.Popen(ssh_args(d, "exec %s/dhfps-mon 3 21600 1" % FPS_REMOTE), stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        st["proc"] = p
+        try:
+            for raw in p.stdout:
+                try:
+                    j = json.loads(raw.decode("utf-8", "replace"))
+                except ValueError:
+                    continue
+                if j.get("start"):
+                    st["error"] = "" if j.get("sources") else "no screen to watch (no /dev/dri card or /dev/fb)"
+                    continue
+                fps, worst, src, kind = fps_primary(j)
+                j.update(fps=fps, worst=worst, src=src, kind=kind)
+                st["samples"].append(j)
+                if st["session"]:
+                    fps_session_add(st["session"], j)
+                if not fps_wanted(st):
+                    break
+        finally:
+            p.kill()
+            p.wait()
+            st["proc"] = None
+        if p.returncode not in (0, -9) and fps_wanted(st):
+            err = p.stderr.read().decode("utf-8", "replace").strip().splitlines()
+            st["error"] = "the monitor stopped%s" % (": " + err[-1][:160] if err else "")
+            time.sleep(3)
+
+
+def fps_session_path(sid, ext):
+    if not re.fullmatch(r"[0-9a-z_-]+", sid):
+        raise ApiError(400, "bad session id")
+    return os.path.join(FPS_DIR, "%s.%s" % (sid, ext))
+
+
+def fps_session_add(s, j):
+    s["n"] += 1
+    s["sum"] += j["fps"]
+    s["min"] = j["fps"] if s["min"] is None else min(s["min"], j["fps"])
+    s["worst"] = max(s["worst"], j["worst"] or 0)
+    s["srcs"][j["src"] or "-"] = s["srcs"].get(j["src"] or "-", 0) + 1
+    with open(fps_session_path(s["id"], "jsonl"), "a", encoding="utf-8") as f:
+        f.write(json.dumps({k: j[k] for k in ("t", "fps", "worst", "src", "kind", "flip", "apps")}) + "\n")
+
+
+def fps_summary(head, samples):
+    """avg, 1% low (1st percentile of the per-second fps), min, longest frame, over a session's samples."""
+    fs = sorted(x["fps"] for x in samples)
+    srcs = collections.Counter(x.get("src") or "-" for x in samples)
+    out = dict(head, seconds=len(fs), avg=round(sum(fs) / len(fs), 1) if fs else 0,
+               low1=fs[max(0, int(len(fs) * 0.01) - 1)] if fs else 0, min=fs[0] if fs else 0,
+               worst_ms=max((x.get("worst") or 0 for x in samples), default=0),
+               source=srcs.most_common(1)[0][0] if srcs else "")
+    if len(fs) >= 100:      # with 100+ seconds the 1% low is the mean of the slowest 1%
+        k = max(1, len(fs) // 100)
+        out["low1"] = round(sum(fs[:k]) / k, 1)
+    return out
+
+
+def fps_session_read(sid):
+    head, samples = None, []
+    with open(fps_session_path(sid, "jsonl"), encoding="utf-8") as f:
+        for line in f:
+            try:
+                j = json.loads(line)
+            except ValueError:
+                continue
+            if "session" in j:
+                head = j["session"]
+            else:
+                samples.append(j)
+    return head or {"id": sid}, samples
+
+
+def fps_session_stop(dev, why=""):
+    st = fps_state(dev)
+    with H.lock:
+        s, st["session"] = st["session"], None
+    if not s:
+        return None
+    head, samples = fps_session_read(s["id"])
+    summary = fps_summary(dict(head, ended=now(), end_note=why), samples)
+    save_json(os.path.join("fps", s["id"] + ".json"), summary)
+    event(dev, "fps", "FPS session \"%s\" ended%s: avg %.1f fps, 1%% low %.1f, %d s" % (
+        summary["label"], " (%s)" % why if why else "", summary["avg"], summary["low1"], summary["seconds"]),
+          summary.get("who"))
+    return summary
+
+
+def fps_kill_stale():
+    """Monitor connections of an earlier run (systemd's KillMode=process keeps this hub's children on a restart)."""
+    me = os.getpid()
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or int(pid) == me:
+            continue
+        try:
+            with open("/proc/%s/cmdline" % pid, "rb") as f:
+                argv = f.read().split(b"\0")
+            if os.path.basename(argv[0]) != b"ssh" or not any(FPS_REMOTE.encode() + b"/dhfps-mon" in a for a in argv) \
+                    or os.stat("/proc/%s" % pid).st_uid != os.getuid():
+                continue
+            with open("/proc/%s/stat" % pid) as f:
+                ppid = f.read().rsplit(")", 1)[1].split()[1]
+            try:
+                with open("/proc/%s/cmdline" % ppid, "rb") as f:
+                    if b"devhubd" in f.read():       # another DeviceHub that is still running (a test hub, say)
+                        continue
+            except OSError:
+                pass
+                os.kill(int(pid), signal.SIGTERM)
+                log("stopped a leftover FPS monitor connection (pid %s)" % pid)
+        except (OSError, IndexError):
+            pass
+
+
+def fps_finish_orphans():
+    """Sessions the hub was recording when it stopped: give them their summary."""
+    if not os.path.isdir(FPS_DIR):
+        return
+    for n in os.listdir(FPS_DIR):
+        if n.endswith(".jsonl") and not os.path.exists(os.path.join(FPS_DIR, n[:-6] + ".json")):
+            sid = n[:-6]
+            try:
+                head, samples = fps_session_read(sid)
+                save_json(os.path.join("fps", sid + ".json"),
+                          fps_summary(dict(head, ended=samples[-1]["t"] / 1000 if samples else head.get("started"),
+                                           end_note="DeviceHub restarted"), samples))
+            except (OSError, ValueError, KeyError, ApiError):
+                pass
+
+
+FPS_HOOK_SH = PM_FIND + r"""
+C="$PM/control.txt"
+[ -n "$PM" ] && [ -f "$C" ] || { echo "NOCONTROL"; exit 0; }
+W=""; [ -w "$C" ] || W="sudo -n"
+case "$ACT" in
+  on)  grep -q "devhub-fps" "$C" || printf '%s\n' "$BLOCK" | $W tee -a "$C" >/dev/null
+       touch /tmp/devhub-fps/hook ;;
+  off) grep -q "devhub-fps" "$C" && $W sed -i '/# >>> devhub-fps/,/# <<< devhub-fps/d' "$C"
+       rm -f /tmp/devhub-fps/hook ;;
+esac
+grep -q "devhub-fps" "$C" && [ -f /tmp/devhub-fps/hook ] && echo ON || echo OFF
+"""
+# how the dynamic loader names its library folder ($LIB) for 64-bit programs: the 64- and 32-bit preload libraries
+# go under those names, so each program loads its own and no "wrong ELF class" warning lands in port logs
+# Which folder name the loader gives 64-bit programs for $LIB (Knulli: lib64): real copies in the candidates, then
+# a 64-bit python3 shows which one it mapped (the loader's error text would show $LIB unexpanded).
+FPS_LIB_SH = r"""
+P=/tmp/devhub-fps/probe; rm -rf $P
+for d in lib lib64 lib/aarch64-linux-gnu usr/lib usr/lib64 lib32; do
+  mkdir -p $P/$d && cp /tmp/devhub-fps/libdhfps-aarch64.so $P/$d/libdhfps.so
+done
+X=$(command -v python3)
+[ -n "$X" ] && LD_PRELOAD="$P/\$LIB/libdhfps.so" "$X" -c 'import sys
+m = [l.split()[-1] for l in open("/proc/self/maps") if "libdhfps" in l]
+sys.stdout.write(m[0] if m else "")' </dev/null 2>/dev/null | sed "s|^$P/||; s|/libdhfps.so$||"
+rm -rf $P
+"""
+FPS_LIB32 = ("lib", "lib32", "lib/arm-linux-gnueabihf", "usr/lib", "usr/lib32")   # usual 32-bit $LIB names
+
+
+def fps_preload(d):
+    """The LD_PRELOAD value that counts frames on this device: /tmp/devhub-fps/L/$LIB/libdhfps.so, with the 64-bit
+    library under the loader's 64-bit $LIB name and the 32-bit one under the usual 32-bit names (each program then
+    loads its own, no 'wrong ELF class' warnings). Without a probe result: the 64-bit library only."""
+    rc, out, _ = ssh_run(d, FPS_LIB_SH, timeout=30)
+    lib64 = out.decode().strip()
+    if not re.fullmatch(r"[a-z0-9_/-]+", lib64 or ""):
+        return FPS_REMOTE + "/libdhfps-aarch64.so", False
+    cmds = ["rm -rf %s/L" % FPS_REMOTE, "mkdir -p %s/L/%s" % (FPS_REMOTE, lib64),
+            "ln -sf %s/libdhfps-aarch64.so %s/L/%s/libdhfps.so" % (FPS_REMOTE, FPS_REMOTE, lib64)]
+    for lib32 in FPS_LIB32:
+        if lib32 != lib64:
+            cmds += ["mkdir -p %s/L/%s" % (FPS_REMOTE, lib32),
+                     "ln -sf %s/libdhfps-armhf.so %s/L/%s/libdhfps.so" % (FPS_REMOTE, FPS_REMOTE, lib32)]
+    ssh_run(d, " && ".join(cmds), timeout=20)
+    return FPS_REMOTE + "/L/$LIB/libdhfps.so", True
+
+
+def fps_hook(d, act):
+    """PortMaster's control.txt (every port sources it): with the hook on, ports launched from the front end load
+    the preload library. Inert once /tmp is cleared (reboot); 'off' removes the lines."""
+    block = ""
+    if act == "on":
+        fps_deploy(d)
+        pre, both = fps_preload(d)
+        block = ("# >>> devhub-fps: DeviceHub's FPS counter (DeviceHub's FPS dialog switches it off and removes this)\n"
+                 "[ -f /tmp/devhub-fps/hook ] && export LD_PRELOAD=\"%s${LD_PRELOAD:+ $LD_PRELOAD}\"\n"
+                 "# <<< devhub-fps" % pre.replace("$LIB", "\\$LIB"))    # $LIB is the loader's, not the shell's
+    rc, out, err = ssh_run(d, "sh -s", inp=remote_sh(FPS_HOOK_SH, PMDIR=d.get("pm_dir") or "", ACT=act,
+                                                      BLOCK=block).encode(), timeout=30)
+    res = out.decode().strip().splitlines()
+    if not res or res[-1] == "NOCONTROL":
+        raise ApiError(409, "PortMaster's control.txt not found on %s" % dname(d))
+    return res[-1] == "ON"
+
+
+def fps_public(st, n=120):
+    s = st["session"]
+    return {"running": bool(st["proc"]), "error": st["error"], "samples": list(st["samples"])[-n:],
+            "hook": st["hook"],
+            "session": s and dict({k: s[k] for k in ("id", "label", "started", "who")},
+                                  source=max(s["srcs"], key=s["srcs"].get) if s["srcs"] else "",
+                                  seconds=s["n"], avg=round(s["sum"] / s["n"], 1) if s["n"] else 0, min=s["min"],
+                                  worst_ms=s["worst"])}
+
+
+@route("GET", r"/api/devices/([a-z0-9_-]+)/fps")
+def r_fps(body, q, dev):
+    """Live FPS (starts the device's monitor; it stops again ~20 s after the last look)."""
+    d = need_device(dev)
+    st = fps_state(dev)
+    st["seen"] = now()
+    if rt(dev)["master"]["state"] == "up":
+        fps_ensure(dev)
+    elif not st["proc"]:
+        st["error"] = "%s has no shared connection right now" % dname(d)
+    return dict(fps_public(st, int((q.get("n") or ["120"])[0])), ok=True)
+
+
+@route("POST", r"/api/devices/([a-z0-9_-]+)/fps/session")
+def r_fps_session(body, q, dev):
+    """Start or stop a tracked session (read-only for the device: no lock needed)."""
+    c = caller(body)
+    d = need_device(dev)
+    st = fps_state(dev)
+    if body.get("action") == "stop":
+        s = fps_session_stop(dev, "stopped by %s" % c["name"])
+        if not s:
+            raise ApiError(409, "no FPS session is running on %s" % dname(d))
+        return with_notices(c, {"ok": True, "summary": s})
+    if st["session"]:
+        raise ApiError(409, "an FPS session (\"%s\") is already running on %s" % (st["session"]["label"], dname(d)))
+    if rt(dev)["master"]["state"] != "up":
+        raise ApiError(409, "%s has no shared connection right now" % dname(d))
+    os.makedirs(FPS_DIR, exist_ok=True)
+    sid = "%s-%s" % (dev, time.strftime("%Y%m%d-%H%M%S"))
+    head = {"id": sid, "dev": dev, "device": d["name"], "cfw": d.get("cfw") or "",
+            "label": str(body.get("label") or "").strip()[:80] or "FPS session", "started": now(), "who": c["name"]}
+    with open(fps_session_path(sid, "jsonl"), "w", encoding="utf-8") as f:
+        f.write(json.dumps({"session": head}) + "\n")
+    with H.lock:
+        st["session"] = dict(head, n=0, sum=0.0, min=None, worst=0, srcs={})
+    st["seen"] = now()
+    fps_ensure(dev)
+    event(dev, "fps", "FPS session \"%s\" started" % head["label"], c["name"])
+    return with_notices(c, {"ok": True, "session": head})
+
+
+@route("GET", r"/api/devices/([a-z0-9_-]+)/fps/hook")
+def r_fps_hook_get(body, q, dev):
+    d = need_device(dev)
+    st = fps_state(dev)
+    try:
+        st["hook"] = fps_hook(d, "status")
+    except subprocess.TimeoutExpired:
+        raise ApiError(504, "%s did not answer" % dname(d))
+    return {"ok": True, "hook": st["hook"]}
+
+
+@route("POST", r"/api/devices/([a-z0-9_-]+)/fps/hook")
+def r_fps_hook(body, q, dev):
+    """Count frames inside ports launched from PortMaster: changes the device, so agents need its lock."""
+    c = caller(body)
+    d = need_device(dev)
+    if not c.get("ui"):
+        lk = H.locks.get(dev)
+        if not (lk and same(lk["holder"], c)):
+            return with_notices(c, {"ok": False, "msg": "%s: take the lock first (devhub acquire %s \"purpose\")" % (dname(d), dev)})
+    on = bool(body.get("on"))
+    try:
+        fps_state(dev)["hook"] = fps_hook(d, "on" if on else "off")
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        raise ApiError(502, str(e) or "%s did not answer" % dname(d))
+    event(dev, "fps", "FPS counter in ports %s" % ("switched on" if on else "switched off"), c["name"])
+    return with_notices(c, {"ok": True, "hook": fps_state(dev)["hook"]})
+
+
+@route("GET", r"/api/devices/([a-z0-9_-]+)/fps/preload")
+def r_fps_preload(body, q, dev):
+    """For agents' own launches: the LD_PRELOAD value that counts a program's frames (tools copied first)."""
+    d = need_device(dev)
+    try:
+        fps_deploy(d)
+        pre, _ = fps_preload(d)
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        raise ApiError(502, str(e) or "%s did not answer" % dname(d))
+    return {"ok": True, "preload": pre}
+
+
+@route("GET", "/api/fps/sessions")
+def r_fps_sessions(body, q):
+    dev = (q.get("dev") or [""])[0]
+    out = []
+    if os.path.isdir(FPS_DIR):
+        for n in os.listdir(FPS_DIR):
+            if n.endswith(".json"):
+                s = load_json(os.path.join("fps", n), None)
+                if s and (not dev or s.get("dev") == dev):
+                    out.append(s)
+    out.sort(key=lambda s: -(s.get("started") or 0))
+    live = [dict(fps_public(st)["session"], dev=d, running=True) for d, st in H.fps.items()
+            if st["session"] and (not dev or d == dev)]
+    return {"ok": True, "sessions": live + out}
+
+
+@route("GET", r"/api/fps/sessions/([0-9a-z_-]+)")
+def r_fps_session_get(body, q, sid):
+    if not os.path.exists(fps_session_path(sid, "jsonl")):
+        raise ApiError(404, "no such FPS session")
+    head, samples = fps_session_read(sid)
+    summary = load_json(os.path.join("fps", sid + ".json"), None) or fps_summary(head, samples)
+    if (q.get("csv") or [""])[0]:
+        rows = ["time,fps,worst_frame_ms,source,kind"] + [
+            "%s,%s,%s,%s,%s" % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(x["t"] / 1000)), x["fps"],
+                                x.get("worst") or 0, (x.get("src") or "").replace(",", " "), x.get("kind") or "")
+            for x in samples]
+        return ("text/csv", ("\n".join(rows) + "\n").encode(),
+                {"Content-Disposition": 'attachment; filename="%s.csv"' % sid})
+    return {"ok": True, "summary": summary,
+            "samples": [{k: x.get(k) for k in ("t", "fps", "worst", "src", "kind")} for x in samples]}
+
+
+@route("DELETE", r"/api/fps/sessions/([0-9a-z_-]+)")
+def r_fps_session_delete(body, q, sid):
+    if not caller(body).get("ui"):
+        raise ApiError(403, "only the user deletes FPS sessions (DeviceHub UI)")
+    if any(st["session"] and st["session"]["id"] == sid for st in H.fps.values()):
+        raise ApiError(409, "that session is still recording: stop it first")
+    for ext in ("jsonl", "json"):
+        try:
+            os.unlink(fps_session_path(sid, ext))
+        except OSError:
+            pass
+    return {"ok": True}
+
+
 @route("POST", r"/api/devices/([a-z0-9_-]+)/push")
 def r_push(body, q, dev):
     """devhub push with HTTP transfers on: the device downloads the file from DeviceHub (status "ssh" = setting off,
@@ -5650,6 +6086,8 @@ def main():
     if os.path.exists(lp) and os.path.getsize(lp) > 2_000_000:
         os.replace(lp, lp + ".1")
     load_local_presets()
+    fps_finish_orphans()
+    fps_kill_stale()
     for d in load_json("devices.json", {"devices": []}).get("devices", []):
         try:
             d = clean_device(d)

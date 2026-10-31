@@ -18,6 +18,10 @@ Then run/push/pull go through the hub, which runs them over the device's shared 
   devhub ports DEV [--json]                    ports installed on the device (read-only)
   devhub fe DEV start|stop|restart|status      front end (EmulationStation, ...)
   devhub shot DEV [OUT.png]                    framebuffer screenshot
+  devhub fps DEV [--for 30s]                   live frame rate (page flips; programs with the preload counter)
+  devhub fps DEV start ["label"] | stop | list tracked FPS sessions (no lock needed)
+  devhub fps DEV hook on|off                   count frames inside ports launched from PortMaster (lock needed)
+  devhub fps DEV preload                       LD_PRELOAD value for your own launches
   devhub env DEV [--wsl]                       shell variables for scripts (DH_SSH, DH_SMB, ...)
   devhub log [DEV] [-n 30]                     recent events
   devhub name "session name"                   how this Claude session shows up in DeviceHub
@@ -528,6 +532,84 @@ class ConsoleFeed:
         self.flush()
 
 
+def fps_line(x):
+    other = ", ".join("%s %s" % (f["src"], f["fps"]) for f in x.get("flip") or [] if f.get("src") != x.get("src"))
+    if not x.get("fps"):
+        return "  - nothing drawn (screen idle)"
+    return "%5.1f fps  %-18s worst frame %5.1f ms%s" % (x["fps"], (x.get("src") or "")[:18], x.get("worst") or 0,
+                                                         "   [screen: %s]" % other if other and x.get("kind") == "app" else "")
+
+
+def fps_summary_line(s):
+    import time
+    return "%s  %-28s %5ss  avg %5.1f  1%% low %5.1f  min %5.1f  worst %6.1f ms  %s" % (
+        time.strftime("%m-%d %H:%M", time.localtime(s.get("started") or 0)), (s.get("label") or "")[:28],
+        s.get("seconds", 0), s.get("avg") or 0, s.get("low1") or 0, s.get("min") or 0, s.get("worst_ms") or 0,
+        "(recording)" if s.get("running") else s.get("id", ""))
+
+
+def c_fps(a):
+    """devhub fps DEV [start LABEL | stop | list | hook on|off | preload]: frame rate on the device."""
+    import time
+    dev, act = a.dev, a.action or "watch"
+    if act == "start":
+        r = call("POST", "/api/devices/%s/fps/session" % dev, dict(ident(a), action="start", label=a.arg or ""))
+        notices(r)
+        if r.get("ok"):
+            print("FPS session \"%s\" recording on %s: devhub fps %s stop" % (r["session"]["label"], dev, dev))
+        return finish(r) if not r.get("ok") else 0
+    if act == "stop":
+        r = call("POST", "/api/devices/%s/fps/session" % dev, dict(ident(a), action="stop"))
+        if r.get("ok"):
+            notices(r)
+            print(fps_summary_line(r["summary"]))
+            return 0
+        return finish(r)
+    if act == "list":
+        r = call("GET", "/api/fps/sessions?dev=%s" % dev)
+        for s in r.get("sessions") or []:
+            print(fps_summary_line(s))
+        return 0 if r.get("ok") else finish(r)
+    if act == "hook":
+        if a.arg in ("on", "off"):
+            return finish(dict(call("POST", "/api/devices/%s/fps/hook" % dev, dict(ident(a), on=a.arg == "on")),
+                               msg="FPS counter in PortMaster ports: %s" % a.arg))
+        r = call("GET", "/api/devices/%s/fps/hook" % dev)
+        print("FPS counter in PortMaster ports: %s" % ("on" if r.get("hook") else "off") if r.get("ok") else r.get("error"))
+        return 0 if r.get("ok") else 1
+    if act == "preload":
+        r = call("GET", "/api/devices/%s/fps/preload" % dev, timeout=240)
+        if r.get("ok"):
+            print("LD_PRELOAD='%s'" % r["preload"])   # single quotes: $LIB is for the loader
+            return 0
+        return finish(r)
+    # watch: one line per second
+    end = time.time() + (parse_secs(a.for_) if a.for_ else 1e9)
+    last, waited = 0, 0
+    try:
+        while time.time() < end:
+            r = call("GET", "/api/devices/%s/fps?n=5" % dev)
+            if not r.get("ok"):
+                return finish(r)
+            new = [x for x in r.get("samples") or [] if x["t"] > last]
+            for x in new:
+                print(fps_line(x), flush=True)
+                last = x["t"]
+            if not new:
+                waited += 1
+                if r.get("error") and waited > 3:
+                    print(r["error"], file=sys.stderr)
+                    return 1
+                if waited == 3:
+                    print("(starting the monitor on the device...)", file=sys.stderr)
+            else:
+                waited = 0
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
 def port_file_kind(path):
     """'PortMaster port zip' / 'PortMaster runtime': files `devhub install` handles; None for anything else."""
     if path.lower().endswith(".squashfs"):
@@ -981,6 +1063,11 @@ def main(argv):
     s = sp("fe", c_fe, "front end start/stop/restart/status")
     s.add_argument("dev")
     s.add_argument("action", choices=["start", "stop", "restart", "status"])
+    s = sp("fps", c_fps, "frame rate: watch it live, record sessions, count frames in ports")
+    s.add_argument("dev")
+    s.add_argument("action", nargs="?", choices=["watch", "start", "stop", "list", "hook", "preload"])
+    s.add_argument("arg", nargs="?", help="start: a label; hook: on or off")
+    s.add_argument("--for", dest="for_", metavar="DURATION", help="watch: stop after this long, e.g. 30s")
     s = sp("shot", c_shot, "framebuffer screenshot")
     s.add_argument("dev")
     s.add_argument("out", nargs="?")
