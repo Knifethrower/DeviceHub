@@ -1,0 +1,99 @@
+<script>
+(function() {
+  var _href = window.location.href;
+  try {
+    Object.defineProperty(window.location, "href", {
+      configurable: true,
+      get: function() { return _href; },
+      set: function(val) {
+        if (String(val).match(/\\.(zip|squashfs)$/i) || String(val).includes("releases/download")) {
+          window.parent.postMessage({ type: "pm-download", url: String(val), title: document.title }, "*");
+          _href = val;
+          return;
+        }
+        _href = val;
+        window.location.assign(val);
+      }
+    });
+  } catch(e) { console.log("href override:", e); }
+
+  try {
+    var _assign = window.location.assign.bind(window.location);
+    window.location.assign = function(url) {
+      if (String(url).match(/\\.(zip|squashfs)$/i) || String(url).includes("releases/download")) {
+        window.parent.postMessage({ type: "pm-download", url: String(url), title: document.title }, "*");
+        return;
+      }
+      _assign(url);
+    };
+  } catch(e) { console.log("assign override:", e); }
+
+  try {
+    var _replace = window.location.replace.bind(window.location);
+    window.location.replace = function(url) {
+      if (String(url).match(/\\.(zip|squashfs)$/i) || String(url).includes("releases/download")) {
+        window.parent.postMessage({ type: "pm-download", url: String(url), title: document.title }, "*");
+        return;
+      }
+      _replace(url);
+    };
+  } catch(e) { console.log("replace override:", e); }
+
+  function rewriteDownloadLinks() {
+    document.querySelectorAll("a[href]").forEach(function(a) {
+      var href = a.getAttribute("href") || "";
+      if (href.match(/\\.(zip|squashfs)$/i) || href.includes("releases/download") || href.includes("github.com/PortsMaster")) {
+        if (!a.dataset.pmIntercepted) {
+          a.dataset.pmIntercepted = "1";
+          var origHref = href;
+          a.removeAttribute("href");
+          a.setAttribute("data-pm-url", origHref);
+          a.style.cursor = "pointer";
+          a.addEventListener("click", function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            window.parent.postMessage({ type: "pm-download", url: origHref, title: document.title }, "*");
+            return false;
+          }, true);
+        }
+      }
+    });
+  }
+  rewriteDownloadLinks();
+  var linkObserver = new MutationObserver(rewriteDownloadLinks);
+  linkObserver.observe(document.body, { childList: true, subtree: true });
+  setTimeout(rewriteDownloadLinks, 1000);
+  setTimeout(rewriteDownloadLinks, 3000);
+
+  document.addEventListener("click", function(e) {
+    var el = e.target;
+    while (el && el !== document) {
+      if (el.tagName === "A" && el.dataset && el.dataset.pmUrl) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.parent.postMessage({ type: "pm-download", url: el.dataset.pmUrl, title: document.title }, "*");
+        return;
+      }
+      el = el.parentElement;
+    }
+  }, true);
+
+  document.addEventListener("submit", function(e) {
+    var form = e.target;
+    var action = form.getAttribute("action") || "";
+    if (action.match(/\\.(zip|squashfs)$/i) || action.includes("download")) {
+      e.preventDefault();
+      window.parent.postMessage({ type: "pm-download", url: action, title: document.title }, "*");
+    }
+  }, true);
+
+  var origOpen = window.open;
+  window.open = function(url, target, features) {
+    if (String(url).match(/\\.(zip|squashfs)$/i) || String(url).includes("releases/download")) {
+      window.parent.postMessage({ type: "pm-download", url: String(url), title: document.title }, "*");
+      return null;
+    }
+    return origOpen(url, target, features);
+  };
+})();
+</script>

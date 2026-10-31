@@ -144,7 +144,7 @@ fieldset legend { font-weight: 600; font-size: 13px; padding: 0; margin-bottom: 
 .f small { color: var(--faint); font-size: 11.5px; }
 .f.cb { flex-direction: row; align-items: center; gap: 8px; }
 .pw { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-#shotdlg img { display: block; max-width: 100%; max-height: calc(100vh - 160px); margin: 0 auto; image-rendering: pixelated; background: #000; }
+#shotdlg img, #livedlg img { display: block; max-width: 100%; max-height: calc(100vh - 160px); margin: 0 auto; image-rendering: pixelated; background: #000; }
 #galdlg { width: min(1100px, calc(100vw - 32px)); }
 .gal { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 .gal[hidden], #galview[hidden], #galback[hidden] { display: none; }
@@ -197,6 +197,7 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
   <button id="agentsbtn" class="small" title="tokens for AI agents on other machines">Agents</button>
   <button id="settingsbtn" class="small">Settings</button>
   <button id="installbtn" class="small" title="install one port zip on every online device at once">Install on all…</button>
+  <button id="wikibtn" class="small" title="open PortMaster wiki and docs">PM-Wiki…</button>
   <button id="addbtn" class="primary small">Add device</button>
   <button id="logoutbtn" class="small" hidden>Log out</button>
 </header>
@@ -241,6 +242,59 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
   <div class="db"><img id="shotimg" alt="device framebuffer"><p class="sub" id="shotpath"></p></div>
 </form></dialog>
 
+<dialog id="livedlg">
+  <div class="dh"><h2 id="livetitle">Live screen</h2><span class="spacer"></span>
+    <select id="livefps" class="slim" title="frames per second"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>8</option><option>10</option><option>15</option><option selected>20</option><option>30</option></select><select id="liveres" class="slim" title="capture resolution"></select>
+    <button type="button" class="small" id="liverestart" title="restart the stream on the device at the chosen fps">Restart</button>
+    <button type="button" class="small danger" id="livestop">Stop</button>
+    <button type="button" class="small" data-close>Close</button></div>
+  <div class="db">
+    <img id="liveimg" alt="device live stream">
+    <p class="sub" id="livestat"></p>
+    <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+      <div class="sub" style="margin-bottom:6px;font-weight:600">Input</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start">
+        <div>
+          <div id="livepad" style="display:grid;grid-template-columns:repeat(4,42px);gap:6px;user-select:none;touch-action:none">
+            <button type="button" class="small ipb" data-pad="up" style="grid-column:2" onclick="livePadPress('up')">▲</button>
+            <button type="button" class="small ipb" data-pad="left" style="grid-column:1;grid-row:2" onclick="livePadPress('left')">◀</button>
+            <button type="button" class="small ipb" data-pad="down" style="grid-column:2;grid-row:2" onclick="livePadPress('down')">▼</button>
+            <button type="button" class="small ipb" data-pad="right" style="grid-column:3;grid-row:2" onclick="livePadPress('right')">▶</button>
+            <button type="button" class="small ipb" data-pad="a" style="grid-column:4;grid-row:1" onclick="if(!inp)startLiveInput(liveDev);qInput([2,304,1]);setTimeout(function(){qInput([2,304,0])},80)">A</button>
+            <button type="button" class="small ipb" data-pad="b" style="grid-column:4;grid-row:2" onclick="livePadPress('b')">B</button>
+            <button type="button" class="small ipb" data-pad="x" style="grid-column:4;grid-row:3" onclick="livePadPress('x')">X</button>
+            <button type="button" class="small ipb" data-pad="y" style="grid-column:4;grid-row:4" onclick="livePadPress('y')">Y</button>
+            <button type="button" class="small ipb" data-pad="lb" style="grid-column:1;grid-row:4" onclick="livePadPress('lb')">LB</button>
+            <button type="button" class="small ipb" data-pad="rb" style="grid-column:3;grid-row:4" onclick="livePadPress('rb')">RB</button>
+            <button type="button" class="small ipb" data-pad="lt" style="grid-column:1;grid-row:3" onclick="livePadPress('lt')">LT</button>
+            <button type="button" class="small ipb" data-pad="rt" style="grid-column:3;grid-row:3" onclick="livePadPress('rt')">RT</button>
+            <button type="button" class="small ipb" data-pad="sel" style="grid-column:1;grid-row:5" onclick="livePadPress('sel')">SELECT</button>
+            <button type="button" class="small ipb" data-pad="start" style="grid-column:2;grid-row:5" onclick="livePadPress('start')">START</button>
+            <button type="button" class="small ipb" data-pad="home" style="grid-column:3;grid-row:5" onclick="livePadPress('home')">HOME</button>
+          </div>
+        </div>
+        <div>
+          <div class="sub" style="font-size:11px;margin-bottom:4px">Keys captured while this dialog is focused.</div>
+          <textarea id="livekeys" rows="4" style="width:100%;font-family:var(--mono);font-size:12px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel2)" placeholder="click here, then type"></textarea>
+          <div class="sub" style="margin-top:6px;font-size:11px">RTT: <span id="livertt">—</span> ms</div>
+        </div>
+      </div>
+      <div style="margin-top:8px">
+        <label class="chk"><input type="checkbox" id="livecapture" checked> capture keyboard</label>
+      </div>
+      <div style="margin-top:8px;border-top:1px solid var(--line);padding-top:8px">
+        <div class="sub" style="margin-bottom:4px;font-weight:600">PC controller (Gamepad API)</div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <select id="livegamepadselect" style="flex:1;min-width:160px;padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel2)"></select>
+          <button type="button" class="small" id="livegamepadrefresh">Refresh</button>
+          <label class="chk"><input type="checkbox" id="livegamepaduse"> Use this controller</label>
+        </div>
+        <div class="sub" style="margin-top:4px;font-size:11px" id="livegamepadstatus">No controller detected.</div>
+      </div>
+    </div>
+  </div>
+</dialog>
+
 <dialog id="galdlg"><form method="dialog">
   <div class="dh"><h2 id="galtitle">Screenshots</h2><span class="spacer"></span>
     <button type="button" class="small" id="galback" hidden>← All screenshots</button>
@@ -268,6 +322,53 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
   </div>
 </form></dialog>
 
+<dialog id="inputdlg" style="width:min(760px, calc(100vw - 32px))"><form method="dialog">
+  <div class="dh"><h2 id="inputtitle">Input</h2><span class="spacer"></span>
+    <label class="chk"><input type="checkbox" id="inputcapture" checked> capture keyboard</label>
+    <button type="button" class="small" id="inputstop" data-close>Stop & close</button></div>
+  <div class="db">
+    <div class="sub" id="inputstatus">Starting input session…</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start">
+      <div>
+        <div class="sub" style="margin-bottom:6px">Gamepad</div>
+        <div id="inputpad" style="display:grid;grid-template-columns:repeat(4,42px);gap:6px;user-select:none;touch-action:none">
+          <button type="button" class="small ipb" data-pad="up" style="grid-column:2">▲</button>
+          <button type="button" class="small ipb" data-pad="left" style="grid-column:1;grid-row:2">◀</button>
+          <button type="button" class="small ipb" data-pad="down" style="grid-column:2;grid-row:2">▼</button>
+          <button type="button" class="small ipb" data-pad="right" style="grid-column:3;grid-row:2">▶</button>
+          <button type="button" class="small ipb" data-pad="a" style="grid-column:4;grid-row:1">A</button>
+          <button type="button" class="small ipb" data-pad="b" style="grid-column:4;grid-row:2">B</button>
+          <button type="button" class="small ipb" data-pad="x" style="grid-column:4;grid-row:3">X</button>
+          <button type="button" class="small ipb" data-pad="y" style="grid-column:4;grid-row:4">Y</button>
+          <button type="button" class="small ipb" data-pad="lb" style="grid-column:1;grid-row:4">LB</button>
+          <button type="button" class="small ipb" data-pad="rb" style="grid-column:3;grid-row:4">RB</button>
+          <button type="button" class="small ipb" data-pad="lt" style="grid-column:1;grid-row:3">LT</button>
+          <button type="button" class="small ipb" data-pad="rt" style="grid-column:3;grid-row:3">RT</button>
+          <button type="button" class="small ipb" data-pad="sel" style="grid-column:1;grid-row:5">SELECT</button>
+          <button type="button" class="small ipb" data-pad="start" style="grid-column:2;grid-row:5">START</button>
+          <button type="button" class="small ipb" data-pad="home" style="grid-column:3;grid-row:5">HOME</button>
+        </div>
+      </div>
+      <div>
+        <div class="sub" style="margin-bottom:6px">Keyboard</div>
+        <div class="sub" style="font-size:11px">Keys captured while this dialog is focused. Type here to send letters.</div>
+        <textarea id="inputkeys" rows="6" style="width:100%;font-family:var(--mono);font-size:12px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel2)" placeholder="click here, then type"></textarea>
+        <div class="sub" style="margin-top:6px" id="inputlast">last: —</div>
+        <div class="sub" style="margin-top:6px">RTT: <span id="inputrtt">—</span> ms</div>
+      </div>
+    </div>
+    <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+      <div class="sub" style="margin-bottom:6px;font-weight:600">PC controller (Gamepad API)</div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <select id="gamepadselect" style="flex:1;min-width:160px;padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel2)"></select>
+        <button type="button" class="small" id="gamepadrefresh">Refresh</button>
+        <label class="chk"><input type="checkbox" id="gamepaduse"> Use this controller</label>
+      </div>
+      <div class="sub" style="margin-top:6px;font-size:11px" id="gamepadstatus">No controller detected. Plug one in and press a button, then click Refresh.</div>
+    </div>
+  </div>
+</form></dialog>
+
 <dialog id="portsdlg"><form method="dialog">
   <div class="dh"><h2 id="portstitle">Installed ports</h2><span class="spacer"></span>
     <input id="portsfilter" type="search" placeholder="Filter" style="padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel2);width:150px">
@@ -282,6 +383,18 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
       <b>Choose a port zip or a runtime .squashfs</b><span class="sub">or drop it here. A port zip is installed with the device's own PortMaster (harbourmaster), like PortMaster's autoinstall; a .squashfs runtime goes to PortMaster's libs folder.</span></label>
     <div class="urlrow" id="insturlrow"><input id="insturl" type="url" spellcheck="false" placeholder="or install from a URL: https://…/port.zip or …/port.zip.md5">
       <button type="button" class="small" id="insturlgo">Use URL</button></div>
+    <div class="portbrowse" id="portbrowse" style="margin-top:8px">
+      <button type="button" class="small" id="browseportsbtn">Browse PortMaster Ports…</button>
+      <div id="portbrowser" style="display:none;margin-top:8px">
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <input id="portsearch" type="search" placeholder="Search ports…" style="flex:1;padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel2)">
+          <select id="portgenre" style="padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel2)"><option value="">All genres</option></select>
+          <label style="display:flex;align-items:center;gap:4px;font-size:12px"><input type="checkbox" id="portrtr"> Ready to run only</label>
+          <button type="button" class="small" id="portrefresh" title="Refresh catalog from PortMaster website">↻</button>
+        </div>
+        <div id="portlist" style="max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:7px"></div>
+      </div>
+    </div>
     <div id="instbody"></div>
   </div>
   <div class="df"><span class="spacer"></span><button type="button" data-close id="instcancel">Cancel</button>
@@ -297,6 +410,32 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
   <div class="dh"><h2>Agents</h2><span class="spacer"></span><button type="button" class="small" data-close>Close</button></div>
   <div class="db" id="agbody"></div>
 </form></dialog>
+
+<dialog id="catalogdlg"><form method="dialog">
+  <div class="dh"><h2>PortMaster Ports Catalog</h2><span class="spacer"></span><button type="button" class="small" data-close>Close</button></div>
+  <div class="db">
+    <div style="display:flex;gap:6px;margin-bottom:8px">
+      <input id="catsearch" type="search" placeholder="Search ports…" style="flex:1;padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel2)">
+      <select id="catgenre" style="padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel2)"><option value="">All genres</option></select>
+      <label style="display:flex;align-items:center;gap:4px;font-size:12px"><input type="checkbox" id="catrtr"> Ready to run only</label>
+      <button type="button" class="small" id="catrefresh">↻</button>
+    </div>
+    <div id="catlist" style="max-height:400px;overflow:auto;border:1px solid var(--line);border-radius:7px"></div>
+  </div>
+</form></dialog>
+
+<dialog id="wikidlg" style="width:95vw;height:90vh;max-width:none;padding:0;overflow:hidden;max-height:90vh">
+  <div style="display:flex;flex-direction:column;height:100%">
+    <div class="dh" style="padding:8px 12px;flex-shrink:0">
+      <h2>PortMaster Wiki & Docs</h2>
+      <span class="spacer"></span>
+      <button type="button" class="small" data-close>Close</button>
+    </div>
+    <div style="flex:1;overflow:hidden">
+      <iframe id="wikiframe" src="/proxy/wiki/" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+  </div>
+</dialog>
 
 <div id="snack"></div>
 
@@ -432,6 +571,7 @@ function card(d) {
       <button class="small" data-act="ports" ${up ? "" : "disabled"}>Installed ports</button>
       <button class="small" data-act="console" ${up ? "" : "disabled"} title="watch what the device and sessions print, for things that show nothing on screen">Console</button>
       <button class="small" data-act="shot" ${up ? "" : "disabled"}>Screenshot</button>
+      <button class="small" data-act="live" ${up ? "" : "disabled"} title="watch this screen in the streamer: it sends only the frames that changed, so an idle menu costs almost nothing">Live screen</button>
       <button class="small" data-act="shots" title="past screenshots of this device">Screenshots</button>
       <button class="small" data-act="copyssh">Copy SSH</button>
       <button class="small" data-act="edit">Edit</button>
@@ -762,6 +902,7 @@ document.addEventListener("click", async e => {
       return;
     }
     case "shot": return takeShot(dev);
+    case "live": return openLive(dev);
     case "shots": return openGallery(dev);
     case "install": return openInstall(d);
     case "ports": return openPorts(d);
@@ -799,6 +940,167 @@ async function takeShot(dev) {
 }
 $("#shotagain").onclick = () => shotDev && takeShot(shotDev);
 $("#shotall").onclick = () => { if (shotDev) { $("#shotdlg").close(); openGallery(shotDev); } };
+
+// live screen: the device's own streamer pushes changed frames over UDP, the hub serves them as PNG
+let liveDev = null, liveTimer = null, liveStatTimer = null, liveGen = 0, liveMisses = 0, liveAsked = false;
+
+async function openLive(dev) {
+  const d = S.devices.find(x => x.id === dev);
+  liveDev = dev;
+  $("#livetitle").textContent = `Live screen · ${d.name}`;
+  // populate resolution selector from the device's reported screen
+  const scr = (d.screen || "").match(/(\d+)\s*x\s*(\d+)/i);
+  const sel = $("#liveres");
+  sel.innerHTML = "";
+  const opts = [];
+  if (scr) {
+    const w = +scr[1], h = +scr[2];
+    opts.push(`${w}x${h}`);
+    if (w > 640) opts.push(`${Math.round(w/2)}x${Math.round(h/2)}`);
+  } else {
+    opts.push("1280x720");
+  }
+  for (const o of opts) {
+    const opt = document.createElement("option");
+    opt.value = o; opt.textContent = o + (o === opts[0] ? " (native)" : "");
+    if (o === opts[0]) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  $("#liveimg").removeAttribute("src");
+  $("#livestat").textContent = "starting the streamer on the device…";
+  $("#liverestart").disabled = $("#livestop").disabled = true;
+  const dlg = $("#livedlg"); if (!dlg.open) dlg.showModal();
+  // event delegation for live pad (more reliable than per-button wiring inside <dialog>)
+const livepad = document.querySelector("#livepad");
+if (livepad) {
+  livepad.addEventListener("pointerdown", e => {
+    const b = e.target.closest(".ipb");
+    if (!b) return;
+    e.preventDefault();
+    const name = b.dataset.pad;
+    if (name === "up" || name === "down" || name === "left" || name === "right") {
+      const ax = (name === "left" || name === "right") ? 7 : 6;
+      const v = (name === "right" || name === "down") ? 1 : -1;
+      qInput([3, ax, v]);
+    } else {
+      const m = PADMAP[name]; if (m) qInput([2, m[1], 1]);
+    }
+    b.style.background = "var(--accent)";
+  });
+  livepad.addEventListener("pointerup", e => {
+    const b = e.target.closest(".ipb");
+    if (!b) return;
+    e.preventDefault();
+    const name = b.dataset.pad;
+    if (name === "up" || name === "down" || name === "left" || name === "right") {
+      const ax = (name === "left" || name === "right") ? 7 : 6;
+      qInput([3, ax, 0]);
+    } else {
+      const m = PADMAP[name]; if (m) qInput([2, m[1], 0]);
+    }
+    b.style.background = "";
+  });
+  livepad.addEventListener("click", e => {
+    const b = e.target.closest(".ipb");
+    if (!b) return;
+    e.preventDefault();
+    // fallback: send press+release
+    const name = b.dataset.pad;
+    if (name === "up" || name === "down" || name === "left" || name === "right") {
+      const ax = (name === "left" || name === "right") ? 7 : 6;
+      const v = (name === "right" || name === "down") ? 1 : -1;
+      qInput([3, ax, v]);
+      setTimeout(() => qInput([3, ax, 0]), 80);
+    } else {
+      const m = PADMAP[name]; if (m) { qInput([2, m[1], 1]); setTimeout(() => qInput([2, m[1], 0]), 80); }
+    }
+  });
+}
+  await startLive(dev);
+  // also start an input session so the controls below the image work
+  await new Promise(r => setTimeout(r, 500));
+  try { await startLiveInput(dev); } catch (e) { }
+}
+
+async function startLiveInput(dev) {
+  if (inp) return; // already have an input session
+  inp = { dev: dev, queue: [], timer: null, capture: true, pingTimer: null };
+  $("#livertt").textContent = "—";
+  try {
+    const j = await api("POST", `/api/devices/${dev}/input/start`, {});
+    if (j.ok === false) { $("#livestat").textContent = ($("#livestat").textContent || "") + " (input: " + (j.error || "failed") + ")"; return; }
+  } catch (e) { $("#livestat").textContent = ($("#livestat").textContent || "") + " (input: " + e + ")"; return; }
+  inp.timer = setInterval(flushInput, 16);
+  inp.pingTimer = setInterval(() => {
+    if (!inp) return;
+    api("POST", `/api/devices/${inp.dev}/input/ping`, { seq: Date.now() >>> 0 }).then(j => {
+      if (j && j.ok !== false && j.rtt_ms !== undefined) $("#livertt").textContent = j.rtt_ms;
+    }).catch(() => {});
+  }, 2000);
+}
+async function startLive(dev) {
+  clearTimeout(liveTimer); clearInterval(liveStatTimer);
+  const fps = +$("#livefps").value;
+  liveMisses = 0; liveAsked = false;
+  const res = $("#liveres").value;
+  const j = await api("POST", `/api/devices/${dev}/live/start`, { fps, res });
+  if (j.ok === false) { $("#livestat").textContent = j.error || "could not start the stream"; return; }
+  if (j.fell_back) snack(`asked for ${j.requested.toUpperCase()}, but this device has no such route — using ${j.mode.toUpperCase()}`, true);
+  $("#liverestart").disabled = $("#livestop").disabled = false;
+  $("#livestat").textContent = j.w ? `${j.mode} route · ${j.w}×${j.h} · waiting for frames…` : `${j.mode} route · waiting for frames…`;
+  if (!$("#livedlg").open) $("#livedlg").showModal();
+  // Poll one frame at a time: if the encode/transfer is slower than the requested fps we simply wait
+  // for the image instead of stacking requests (stacked requests were what caused the multi-second lag).
+  const gen = ++liveGen;
+  const tick = () => {
+    if (gen !== liveGen || liveDev !== dev || !$("#livedlg").open) return;
+    const t0 = performance.now();
+    const img = $("#liveimg");
+    const next = () => {
+      if (gen !== liveGen) return;
+      liveTimer = setTimeout(tick, Math.max(16, Math.round(1000 / fps) - (performance.now() - t0)));
+    };
+    img.onload = () => { liveMisses = 0; next(); };
+    img.onerror = () => { liveMisses++; console.error("live img load failed"); next(); };
+    img.src = `/api/devices/${dev}/live/frame?t=${TOKEN}&r=${Date.now()}`;
+  };
+  tick();
+  liveStatTimer = setInterval(async () => {
+    if (liveDev !== dev || !$("#livedlg").open) return;
+    const st = await api("GET", `/api/devices/${dev}/live?log=1`);   // the server only reads the device's log when frames went quiet
+    if (st.ok === false) return;
+    if (!st.active) { $("#livestat").textContent = "stream stopped"; clearTimeout(liveTimer); clearInterval(liveStatTimer); liveGen++; return; }
+    if (st.device_log) {
+      if (!liveAsked) { liveAsked = true; $("#livestat").textContent = `no signal from the device: ${st.device_log}`; }
+      return;
+    }
+    if (st.w) {
+      const q = st.age != null && st.age > 4 ? ` · still ${st.age} s` : "";
+      const m = st.measured ? ` · ~${st.measured} fps` : "";
+      $("#livestat").textContent = `${st.mode} route · ${st.w}×${st.h} @ ${st.fps} fps${m}${q}`;
+    }
+  }, 1000);
+}
+
+$("#liverestart").onclick = () => liveDev && startLive(liveDev);
+$("#livestop").onclick = () => { if (liveDev) act(api("POST", `/api/devices/${liveDev}/live/stop`), "stream stopped"); $("#livedlg").close(); };
+$("#livefps").onchange = () => { if (liveDev && $("#livedlg").open) startLive(liveDev); };
+$("#liveres").onchange = () => { if (liveDev && $("#livedlg").open) startLive(liveDev); };
+$("#livedlg").addEventListener("close", () => {
+  clearTimeout(liveTimer); clearInterval(liveStatTimer); liveGen++;
+  const dev = liveDev; liveDev = null; liveAsked = false;
+  if (dev) {
+    api("POST", `/api/devices/${dev}/live/stop`);
+    // stop input session too
+    if (inp) {
+      if (inp.timer) clearInterval(inp.timer);
+      if (inp.pingTimer) clearInterval(inp.pingTimer);
+      qInput([4]); flushInput();
+      api("POST", `/api/devices/${dev}/input/stop`, {}).catch(() => {});
+      inp = null;
+    }
+  }
+});
 
 // past screenshots of a device: thumbnails, full-size view, download, delete
 let galDev = null, galShots = [], galKeep = 30;
@@ -1065,6 +1367,516 @@ async function useUrl() {
 }
 $("#insturlgo").onclick = useUrl;
 $("#insturl").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); useUrl(); } });
+
+// ------------------------------------------------------------ browse PortMaster ports catalog
+let portCatalog = null;
+const browseBtn = $("#browseportsbtn");
+if (browseBtn) {
+  browseBtn.onclick = async () => {
+  const browser = $("#portbrowser");
+  if (browser.style.display === "none") {
+    browser.style.display = "";
+    if (!portCatalog) await loadPortCatalog();
+    renderPortList();
+  } else {
+    browser.style.display = "none";
+  }
+  };
+}
+async function loadPortCatalog(refresh = false) {
+  const list = $("#portlist");
+  if (!list) { console.error("portlist not found"); return; }
+  list.innerHTML = `<div class="sub" style="padding:8px">Loading PortMaster ports catalog…</div>`;
+  try {
+    let url = "/api/ports-catalog" + (refresh ? "?refresh=1" : "");
+    const r = await fetch(url, { headers: { "X-DevHub-Token": TOKEN } });
+    if (!r.ok) { list.innerHTML = `<div class="e" style="padding:8px">HTTP ${r.status} ${r.statusText}</div>`; return; }
+    const j = await r.json();
+    if (!j.ok) { list.innerHTML = `<div class="e" style="padding:8px">${esc(j.error || "unknown error")}</div>`; return; }
+    if (!j.ports || !j.ports.length) { list.innerHTML = `<div class="sub" style="padding:8px">No ports returned from server.</div>`; return; }
+    portCatalog = j.ports;
+    console.log("Loaded ports:", portCatalog.length);
+    // Populate genre filter
+    const gj = await api("GET", "/api/ports-catalog/genres");
+    if (gj.ok && gj.genres) {
+      const sel = $("#portgenre");
+      gj.genres.forEach(g => { const o = document.createElement("option"); o.value = g; o.textContent = g; sel.appendChild(o); });
+    }
+    renderPortList();
+  } catch (e) {
+    list.innerHTML = `<div class="e" style="padding:8px">Failed to load: ${esc(e.message || e)}</div>`;
+  }
+}
+function renderPortList() {
+  try {
+  if (!portCatalog) { console.log("portCatalog is null"); return; }
+  const search = ($("#portsearch") ? $("#portsearch").value : "").toLowerCase();
+  const genre = ($("#portgenre") ? $("#portgenre").value : "").toLowerCase();
+  const rtrOnly = $("#portrtr") ? $("#portrtr").checked : false;
+  let filtered = portCatalog.filter(p => {
+    if (search && !p.title.toLowerCase().includes(search) && !(p.desc || "").toLowerCase().includes(search)) return false;
+    if (genre && !(p.genres || []).map(g => g.toLowerCase()).includes(genre)) return false;
+    if (rtrOnly && !p.rtr) return false;
+    return true;
+  });
+  const list = $("#portlist");
+  if (!list) { console.log("portlist not found"); return; }
+  if (!filtered.length) { list.innerHTML = `<div class="sub" style="padding:8px">No ports match.</div>`; return; }
+  list.innerHTML = filtered.slice(0, 200).map(p => `
+    <div class="portitem" style="padding:8px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:8px;align-items:center" data-url="${esc(p.url)}" data-title="${esc(p.title)}">
+      <div style="flex:1;min-width:0">
+        <b style="font-size:13px">${esc(p.title)}</b>
+        <span class="sub" style="display:inline;font-size:11px">${p.genres ? " · " + p.genres.join(", ") : ""}${p.rtr ? " · ready to run" : ""}</span>
+        <div class="sub" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((p.desc || "").slice(0, 120))}</div>
+      </div>
+      <span class="sub" style="font-size:11px;white-space:nowrap">${p.size ? (p.size / 1048576).toFixed(1) + " MB" : ""}</span>
+    </div>`).join("");
+  list.querySelectorAll(".portitem").forEach(el => {
+    el.onclick = () => {
+      const url = el.dataset.url;
+      if (!url) return snack("No download URL for this port", true);
+      $("#insturl").value = url;
+      useUrl();
+    };
+  });
+  } catch (e) { console.error("renderPortList error:", e); }
+}
+const ps = $("#portsearch"); if (ps) ps.addEventListener("input", renderPortList);
+// Listen for messages from the proxied PortMaster website iframe
+window.addEventListener("message", e => {
+  if (e.data && e.data.type === "pm-download") {
+    const url = e.data.url;
+    const title = e.data.title || "Port";
+    if (!url) return;
+    let fullUrl = url;
+    if (url.startsWith("/")) fullUrl = "https://portmaster.games" + url;
+    else if (!url.startsWith("http")) fullUrl = "https://portmaster.games/" + url;
+    openInstall(null);
+    const inp = $("#insturl");
+    if (inp) inp.value = fullUrl;
+    useUrl();
+    snack("Selected: " + title);
+  }
+});
+
+// ------------------------------------------------------------ input: keyboard + gamepad to the device
+let inp = null;   // {dev, timer, keys}
+const KEYMAP = {
+  "KeyA":4,"KeyB":5,"KeyC":6,"KeyD":7,"KeyE":8,"KeyF":9,"KeyG":10,"KeyH":11,"KeyI":12,"KeyJ":13,"KeyK":14,"KeyL":15,"KeyM":16,
+  "KeyN":17,"KeyO":18,"KeyP":19,"KeyQ":20,"KeyR":21,"KeyS":22,"KeyT":23,"KeyU":24,"KeyV":25,"KeyW":26,"KeyX":27,"KeyY":28,"KeyZ":29,
+  "Digit1":30,"Digit2":31,"Digit3":32,"Digit4":33,"Digit5":34,"Digit6":35,"Digit7":36,"Digit8":37,"Digit9":38,"Digit0":39,
+  "Enter":28,"Escape":1,"Backspace":14,"Tab":15,"Space":57,"Minus":12,"Equal":13,"BracketLeft":26,"BracketRight":27,"Backslash":43,
+  "Semicolon":39,"Quote":40,"Backquote":41,"Comma":51,"Period":52,"Slash":53,"CapsLock":58,
+  "ShiftLeft":42,"ShiftRight":54,"ControlLeft":29,"ControlRight":97,"AltLeft":56,"AltRight":100,"MetaLeft":125,
+  "F1":59,"F2":60,"F3":61,"F4":62,"F5":63,"F6":64,"F7":65,"F8":66,"F9":67,"F10":68,"F11":87,"F12":88,
+  "ArrowUp":103,"ArrowDown":108,"ArrowLeft":105,"ArrowRight":106,"Insert":110,"Delete":111,"Home":102,"End":107,"PageUp":104,"PageDown":109,
+};
+const PADMAP = {
+  up:[3,6,-1], down:[3,6,1], left:[3,7,-1], right:[3,7,1],
+  a:[2,0x130,1], b:[2,0x131,1], x:[2,0x133,1], y:[2,0x134,1],
+  lb:[2,0x136,1], rb:[2,0x137,1], lt:[2,0x138,1], rt:[2,0x139,1],
+  sel:[2,0x13a,1], start:[2,0x13b,1], home:[2,0x13c,1],
+};
+async function openInput(d) {
+  inp = { dev: d.id, queue: [], timer: null, capture: true };
+  $("#inputtitle").textContent = `Input · ${d.name}`;
+  $("#inputstatus").textContent = "Starting input session on the device…";
+  $("#inputdlg").showModal();
+  try {
+    const j = await api("POST", `/api/devices/${d.id}/input/start`, {});
+    if (j.ok === false) { $("#inputstatus").textContent = "Could not start: " + (j.error || ""); return; }
+    $("#inputstatus").textContent = `Connected (udp ${j.port}) — hold pointer on a pad button to press it.`;
+  } catch (e) { $("#inputstatus").textContent = "Could not start: " + e; return; }
+  inp.timer = setInterval(flushInput, 16);
+  // ping loop
+  inp.pingTimer = setInterval(pingInput, 2000);
+}
+async function flushInput() {
+  if (!inp) return;
+  const evs = inp.queue.splice(0);
+  if (!evs.length) return;
+  try { await api("POST", `/api/devices/${inp.dev}/input/event`, { ev: evs }); } catch (e) {}
+}
+async function pingInput() {
+  if (!inp) return;
+  try {
+    const j = await api("POST", `/api/devices/${inp.dev}/input/ping`, { seq: Date.now() >>> 0 });
+    if (j.ok !== false && j.rtt_ms !== undefined) $("#inputrtt").textContent = j.rtt_ms;
+  } catch (e) {}
+}
+function qInput(ev) { if (!inp && liveDev) { startLiveInput(liveDev); } if (inp) inp.queue.push(ev); }
+function setPad(name, down) {
+  const m = PADMAP[name]; if (!m) return;
+  if (m[0] === 2) qInput([2, m[1], down ? 1 : 0]);
+  else if (m[0] === 3) qInput([3, m[2], down ? m[3] : 0]);  // axes handled separately below
+}
+// wire pad buttons
+function wirePad(sel) {
+  const container = document.querySelector(sel);
+  if (!container || container._wired) return;
+  container._wired = true;
+  container.querySelectorAll(".ipb").forEach(b => {
+    const name = b.dataset.pad;
+    const down = () => {
+      if (name === "up" || name === "down" || name === "left" || name === "right") {
+        const ax = (name === "left" || name === "right") ? 7 : 6;
+        const v = (name === "right" || name === "down") ? 1 : -1;
+        qInput([3, ax, v]);
+      } else {
+        const m = PADMAP[name]; qInput([2, m[1], 1]);
+      }
+      b.style.background = "var(--accent)";
+    };
+    const up = () => {
+      if (name === "up" || name === "down" || name === "left" || name === "right") {
+        const ax = (name === "left" || name === "right") ? 7 : 6;
+        qInput([3, ax, 0]);
+      } else {
+        const m = PADMAP[name]; qInput([2, m[1], 0]);
+      }
+      b.style.background = "";
+    };
+    b.addEventListener("pointerdown", e => { e.preventDefault(); down(); });
+    b.addEventListener("pointerup", e => { e.preventDefault(); up(); });
+    b.addEventListener("pointerleave", e => { up(); });
+    b.addEventListener("pointercancel", e => { up(); });
+    // fallback for browsers where pointer events don't fire (e.g. inside <dialog> on mobile)
+    b.addEventListener("click", e => { e.preventDefault(); down(); setTimeout(up, 80); });
+  });
+}
+wirePad("#inputpad");
+// event delegation for live pad (more reliable than per-button wiring inside <dialog>)
+const livepad = document.querySelector("#livepad");
+if (livepad) {
+  livepad.addEventListener("pointerdown", e => {
+    const b = e.target.closest(".ipb");
+    if (!b) return;
+    e.preventDefault();
+    const name = b.dataset.pad;
+    if (name === "up" || name === "down" || name === "left" || name === "right") {
+      const ax = (name === "left" || name === "right") ? 7 : 6;
+      const v = (name === "right" || name === "down") ? 1 : -1;
+      qInput([3, ax, v]);
+    } else {
+      const m = PADMAP[name]; if (m) qInput([2, m[1], 1]);
+    }
+    b.style.background = "var(--accent)";
+  });
+  livepad.addEventListener("pointerup", e => {
+    const b = e.target.closest(".ipb");
+    if (!b) return;
+    e.preventDefault();
+    const name = b.dataset.pad;
+    if (name === "up" || name === "down" || name === "left" || name === "right") {
+      const ax = (name === "left" || name === "right") ? 7 : 6;
+      qInput([3, ax, 0]);
+    } else {
+      const m = PADMAP[name]; if (m) qInput([2, m[1], 0]);
+    }
+    b.style.background = "";
+  });
+  livepad.addEventListener("click", e => {
+    const b = e.target.closest(".ipb");
+    if (!b) return;
+    e.preventDefault();
+    // fallback: send press+release
+    const name = b.dataset.pad;
+    if (name === "up" || name === "down" || name === "left" || name === "right") {
+      const ax = (name === "left" || name === "right") ? 7 : 6;
+      const v = (name === "right" || name === "down") ? 1 : -1;
+      qInput([3, ax, v]);
+      setTimeout(() => qInput([3, ax, 0]), 80);
+    } else {
+      const m = PADMAP[name]; if (m) { qInput([2, m[1], 1]); setTimeout(() => qInput([2, m[1], 0]), 80); }
+    }
+  });
+}
+window.addEventListener("keydown", e => {
+  if (!inp || !($("#inputdlg").open || $("#livedlg").open)) return;
+  if (!($("#inputcapture").checked || $("#livecapture").checked)) return;
+  const kc = KEYMAP[e.code];
+  if (kc) { e.preventDefault(); qInput([1, kc, 1]); const el = $("#inputlast"); if (el) el.textContent = "last: " + e.code + " down"; }
+}, true);
+window.addEventListener("keyup", e => {
+  if (!inp || !($("#inputdlg").open || $("#livedlg").open)) return;
+  if (!($("#inputcapture").checked || $("#livecapture").checked)) return;
+  const kc = KEYMAP[e.code];
+  if (kc) { e.preventDefault(); qInput([1, kc, 0]); const el = $("#inputlast"); if (el) el.textContent = "last: " + e.code + " up"; }
+}, true);
+$("#inputkeys").addEventListener("keydown", e => {
+  // allow typing; also forward
+  if (!inp) return;
+  const kc = KEYMAP[e.code];
+  if (kc) qInput([1, kc, 1]);
+});
+$("#inputkeys").addEventListener("keyup", e => {
+  if (!inp) return;
+  const kc = KEYMAP[e.code];
+  if (kc) qInput([1, kc, 0]);
+});
+$("#livekeys").addEventListener("keydown", e => {
+  if (!inp) return;
+  const kc = KEYMAP[e.code];
+  if (kc) qInput([1, kc, 1]);
+});
+$("#livekeys").addEventListener("keyup", e => {
+  if (!inp) return;
+  const kc = KEYMAP[e.code];
+  if (kc) qInput([1, kc, 0]);
+});
+$("#inputdlg").addEventListener("close", async () => {
+  if (!inp) return;
+  if (gpState && gpState.raf) cancelAnimationFrame(gpState.raf);
+  gpState = null;
+  const cb = $("#gamepaduse"); if (cb) cb.checked = false;
+  clearInterval(inp.timer); clearInterval(inp.pingTimer);
+  // release all + stop
+  qInput([4]); await flushInput();
+  try { await api("POST", `/api/devices/${inp.dev}/input/stop`, {}); } catch (e) {}
+  inp = null;
+});
+$("#inputstop").addEventListener("click", () => { $("#inputdlg").close(); });
+
+// ------------------------------------------------------------ PC gamepad forwarding via Gamepad API
+let gpState = null;   // {index, raf, prevButtons:[], prevAxes:[]}
+const GP_BTN_MAP = [0x130,0x131,0x133,0x134,0x136,0x137,0x138,0x139,0x13a,0x13b,0x13d,0x13e,0,0,0,0,0x13c];
+// standard gamepad button indices: 0=A 1=B 2=X 3=Y 4=LB 5=RB 6=LT 7=RT 8=Back 9=Start 10=L3 11=R3 12=Up 13=Down 14=Left 15=Right 16=Home
+function refreshGamepads() {
+  const sel = $("#gamepadselect");
+  const prev = sel.value;
+  const gps = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
+  sel.innerHTML = gps.length
+    ? gps.map(g => `<option value="${g.index}">${esc(g.id)} (index ${g.index})</option>`).join("")
+    : `<option value="">— none connected —</option>`;
+  if (prev && gps.some(g => String(g.index) === prev)) sel.value = prev;
+  $("#gamepadstatus").textContent = gps.length
+    ? `${gps.length} controller(s) detected. Check "Use this controller" to forward it.`
+    : "No controller detected. Plug one in, press a button on it, then click Refresh.";
+}
+$("#gamepadrefresh").onclick = () => {
+  refreshGamepads();
+  // also refresh live gamepad select
+  const sel = $("#livegamepadselect");
+  const prev = sel.value;
+  const gps = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
+  sel.innerHTML = gps.length
+    ? gps.map(g => `<option value="${g.index}">${esc(g.id)} (index ${g.index})</option>`).join("")
+    : `<option value="">— none connected —</option>`;
+  if (prev && gps.some(g => String(g.index) === prev)) sel.value = prev;
+};
+window.addEventListener("gamepadconnected", () => { refreshGamepads(); $("#gamepadstatus").textContent = "Controller connected!"; });
+window.addEventListener("gamepaddisconnected", () => { refreshGamepads(); $("#gamepadstatus").textContent = "Controller disconnected."; });
+
+function startGamepadForwarding(index) {
+  if (gpState) cancelAnimationFrame(gpState.raf);
+  const gp = navigator.getGamepads()[index];
+  if (!gp) { $("#gamepadstatus").textContent = "Controller not found."; return; }
+  gpState = { index, prevButtons: gp.buttons.map(b => !!b.pressed), prevAxes: [...gp.axes], raf: null };
+  // init prev hat
+  gpState.prevHat = { x: 0, y: 0 };
+  const loop = () => {
+    const liveOpen = $("#livedlg").open;
+    const inputOpen = $("#inputdlg").open;
+    const liveChecked = $("#livegamepaduse").checked;
+    const inputChecked = $("#gamepaduse").checked;
+    if (!inp || !(liveOpen || inputOpen) || !(liveChecked || inputChecked)) { gpState = null; return; }
+    const g = navigator.getGamepads()[index];
+    if (!g) { gpState = null; $("#gamepadstatus").textContent = "Controller lost."; return; }
+    const evs = [];
+    // buttons 0-11, 16
+    for (let i = 0; i < g.buttons.length; i++) {
+      if (i >= 12 && i <= 15) continue; // d-pad handled as hat
+      if (i === 16) {
+        const code = GP_BTN_MAP[16];
+        const pressed = !!g.buttons[i].pressed;
+        if (pressed !== gpState.prevButtons[i]) { evs.push([2, code, pressed ? 1 : 0]); gpState.prevButtons[i] = pressed; }
+        continue;
+      }
+      const code = GP_BTN_MAP[i];
+      if (!code) continue;
+      const pressed = !!g.buttons[i].pressed;
+      if (pressed !== gpState.prevButtons[i]) { evs.push([2, code, pressed ? 1 : 0]); gpState.prevButtons[i] = pressed; }
+    }
+    // d-pad as hat
+    let hx = 0, hy = 0;
+    if (g.buttons[14]?.pressed) hx = -1;
+    else if (g.buttons[15]?.pressed) hx = 1;
+    if (g.buttons[12]?.pressed) hy = -1;
+    else if (g.buttons[13]?.pressed) hy = 1;
+    // fallback axes 6/7 for some controllers
+    if (g.axes.length >= 8 && (g.axes[6] !== undefined)) {
+      const ax = g.axes[6]; if (Math.abs(ax) > 0.5) hx = ax > 0 ? 1 : -1; else if (Math.abs(ax) < 0.1 && hx === 0) hx = 0;
+    }
+    if (g.axes.length >= 8 && (g.axes[7] !== undefined)) {
+      const ay = g.axes[7]; if (Math.abs(ay) > 0.5) hy = ay > 0 ? 1 : -1; else if (Math.abs(ay) < 0.1 && hy === 0) hy = 0;
+    }
+    if (hx !== gpState.prevHat.x) { evs.push([3, 6, hx]); gpState.prevHat.x = hx; }
+    if (hy !== gpState.prevHat.y) { evs.push([3, 7, hy]); gpState.prevHat.y = hy; }
+    // analog sticks (deadzone 0.15)
+    const dz = 0.15;
+    const ax0 = Math.abs(g.axes[0] || 0) > dz ? g.axes[0] : 0;
+    const ay0 = Math.abs(g.axes[1] || 0) > dz ? g.axes[1] : 0;
+    const ax1 = (g.axes.length > 2 && Math.abs(g.axes[2]) > dz) ? g.axes[2] : 0;
+    const ay1 = (g.axes.length > 3 && Math.abs(g.axes[3]) > dz) ? g.axes[3] : 0;
+    const v0 = Math.round(ax0 * 32767);
+    const v1 = Math.round(ay0 * 32767);
+    const v2 = Math.round(ax1 * 32767);
+    const v3 = Math.round(ay1 * 32767);
+    if (v0 !== gpState.prevAxes[0]) { evs.push([3, 0, v0]); gpState.prevAxes[0] = v0; }
+    if (v1 !== gpState.prevAxes[1]) { evs.push([3, 1, v1]); gpState.prevAxes[1] = v1; }
+    if (v2 !== gpState.prevAxes[2]) { evs.push([3, 3, v2]); gpState.prevAxes[2] = v2; }
+    if (v3 !== gpState.prevAxes[3]) { evs.push([3, 4, v3]); gpState.prevAxes[3] = v3; }
+    // triggers (axes 4,5 → 0..1023)
+    if (g.axes.length >= 6) {
+      const lt = Math.round(Math.max(0, g.axes[4] || 0) * 1023);
+      const rt = Math.round(Math.max(0, g.axes[5] || 0) * 1023);
+      if (lt !== gpState.prevAxes[4]) { evs.push([3, 2, lt]); gpState.prevAxes[4] = lt; }
+      if (rt !== gpState.prevAxes[5]) { evs.push([3, 5, rt]); gpState.prevAxes[5] = rt; }
+    }
+    // also handle LT/RT as buttons (some controllers report triggers as buttons 6/7)
+    if (g.buttons[6]) {
+      const pressed = !!g.buttons[6].pressed;
+      if (pressed !== gpState.prevButtons[6]) { /* already handled by button loop above */ }
+    }
+    if (evs.length) qInput_batch(evs);
+    gpState.raf = requestAnimationFrame(loop);
+  };
+  gpState.raf = requestAnimationFrame(loop);
+}
+function qInput_batch(evs) { if (inp) for (const e of evs) inp.queue.push(e); }
+$("#gamepaduse").addEventListener("change", () => {
+  if ($("#gamepaduse").checked) {
+    const idx = parseInt($("#gamepadselect").value);
+    if (isNaN(idx)) { $("#gamepaduse").checked = false; return; }
+    startGamepadForwarding(idx);
+    $("#gamepadstatus").textContent = "Forwarding controller…";
+  } else {
+    if (gpState && gpState.raf) cancelAnimationFrame(gpState.raf);
+    gpState = null;
+    // release all
+    if (inp) inp.queue.push([4]);
+    $("#gamepadstatus").textContent = "Forwarding stopped.";
+  }
+});
+$("#livegamepadrefresh").onclick = () => {
+  const sel = $("#livegamepadselect");
+  const prev = sel.value;
+  const gps = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
+  sel.innerHTML = gps.length
+    ? gps.map(g => `<option value="${g.index}">${esc(g.id)} (index ${g.index})</option>`).join("")
+    : `<option value="">— none connected —</option>`;
+  if (prev && gps.some(g => String(g.index) === prev)) sel.value = prev;
+  $("#livegamepadstatus").textContent = gps.length
+    ? `${gps.length} controller(s) detected. Check "Use this controller" to forward it.`
+    : "No controller detected. Plug one in, press a button on it, then click Refresh.";
+};
+$("#livegamepaduse").addEventListener("change", () => {
+  if ($("#livegamepaduse").checked) {
+    const idx = parseInt($("#livegamepadselect").value);
+    if (isNaN(idx)) { $("#livegamepaduse").checked = false; return; }
+    startGamepadForwarding(idx);
+    $("#livegamepadstatus").textContent = "Forwarding controller…";
+  } else {
+    if (gpState && gpState.raf) cancelAnimationFrame(gpState.raf);
+    gpState = null;
+    if (inp) inp.queue.push([4]);
+    $("#livegamepadstatus").textContent = "Forwarding stopped.";
+  }
+});
+// refresh gamepads periodically while modal open
+setInterval(() => { if ($("#inputdlg").open) refreshGamepads(); }, 2000);
+
+// ------------------------------------------------------------ wiki dialog
+const wikiBtn = $("#wikibtn");
+if (wikiBtn) wikiBtn.onclick = () => { const d = $("#wikidlg"); if (d) { d.showModal(); } };
+const wikiFrame = $("#wikiframe");
+function wikiNav(url) { if (wikiFrame) wikiFrame.src = url; }
+const wh = $("#wikihome"); if (wh) wh.onclick = () => wikiNav("/proxy/wiki/");
+const wi = $("#wikiinstall"); if (wi) wi.onclick = () => wikiNav("https://portmaster.games/installation.html");
+const wh2 = $("#wikiharbour"); if (wh2) wh2.onclick = () => wikiNav("https://portmaster.games/harbourmaster.html");
+const wg = $("#wikigptokeyb"); if (wg) wg.onclick = () => wikiNav("https://portmaster.games/gptokeyb-documentation.html");
+const wd = $("#wikidevices"); if (wd) wd.onclick = () => wikiNav("https://portmaster.games/supported-devices.html");
+const wpm = $("#wikipm"); if (wpm) wpm.onclick = () => wikiNav("/proxy/pm/");
+const wwiki = $("#wikiwiki"); if (wwiki) wwiki.onclick = () => wikiNav("https://jantrueno.github.io/PortMaster-Wiki/");
+// ------------------------------------------------------------ standalone port catalog dialog (unused, kept for compatibility)
+const catalogBtn = $("#catalogbtn");
+async function loadCatalogList(refresh = false) {
+  const list = $("#catlist");
+  if (!list) return;
+  list.innerHTML = `<div class="sub" style="padding:8px">Loading…</div>`;
+  try {
+    let url = "/api/ports-catalog" + (refresh ? "?refresh=1" : "");
+    const r = await fetch(url, { headers: { "X-DevHub-Token": TOKEN } });
+    if (!r.ok) { list.innerHTML = `<div class="e" style="padding:8px">HTTP ${r.status}</div>`; return; }
+    const j = await r.json();
+    if (!j.ok) { list.innerHTML = `<div class="e" style="padding:8px">${esc(j.error)}</div>`; return; }
+    if (!j.ports || !j.ports.length) { list.innerHTML = `<div class="sub" style="padding:8px">No ports.</div>`; return; }
+    portCatalog = j.ports;
+    // Populate genres
+    const gj = await api("GET", "/api/ports-catalog/genres");
+    if (gj.ok && gj.genres) {
+      const sel = $("#catgenre");
+      if (sel && sel.options.length <= 1) gj.genres.forEach(g => { const o = document.createElement("option"); o.value = g; o.textContent = g; sel.appendChild(o); });
+    }
+    renderCatalogList();
+  } catch (e) { list.innerHTML = `<div class="e" style="padding:8px">${esc(e.message || e)}</div>`; }
+}
+function renderCatalogList() {
+  if (!portCatalog) return;
+  const search = ($("#catsearch") ? $("#catsearch").value : "").toLowerCase();
+  const genre = ($("#catgenre") ? $("#catgenre").value : "").toLowerCase();
+  const rtrOnly = $("#catrtr") ? $("#catrtr").checked : false;
+  let filtered = portCatalog.filter(p => {
+    if (search && !p.title.toLowerCase().includes(search) && !(p.desc || "").toLowerCase().includes(search)) return false;
+    if (genre && !(p.genres || []).map(g => g.toLowerCase()).includes(genre)) return false;
+    if (rtrOnly && !p.rtr) return false;
+    return true;
+  });
+  const list = $("#catlist");
+  if (!list) return;
+  if (!filtered.length) { list.innerHTML = `<div class="sub" style="padding:8px">No ports match.</div>`; return; }
+  list.innerHTML = filtered.slice(0, 300).map(p => `
+    <div style="padding:8px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center">
+      <div style="flex:1;min-width:0">
+        <b style="font-size:13px">${esc(p.title)}</b>
+        <span class="sub" style="display:inline;font-size:11px">${p.genres ? " · " + p.genres.join(", ") : ""}${p.rtr ? " · ready to run" : ""}</span>
+        <div class="sub" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((p.desc || "").slice(0, 120))}</div>
+      </div>
+      <span class="sub" style="font-size:11px;white-space:nowrap">${p.size ? (p.size / 1048576).toFixed(1) + " MB" : ""}</span>
+      <button type="button" class="small" data-install-url="${esc(p.url)}" data-install-title="${esc(p.title)}" style="white-space:nowrap">Install</button>
+    </div>`).join("");
+  list.querySelectorAll("button[data-install-url]").forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const url = btn.dataset.installUrl;
+      const title = btn.dataset.installTitle;
+      if (!url) return snack("No download URL for this port", true);
+      // Open install dialog with this URL pre-filled
+      openInstall(null);
+      $("#insturl").value = url;
+      useUrl();
+    };
+  });
+}
+const cs = $("#catsearch"); if (cs) cs.addEventListener("input", renderCatalogList);
+const cg = $("#catgenre"); if (cg) cg.addEventListener("change", renderCatalogList);
+const cr = $("#catrtr"); if (cr) cr.addEventListener("change", renderCatalogList);
+const crefresh = $("#catrefresh"); if (crefresh) crefresh.onclick = async () => {
+  crefresh.disabled = true;
+  portCatalog = null;
+  await loadCatalogList(true);
+  crefresh.disabled = false;
+};
+// Keep loadPortCatalog for the install dialog's browse button (renders to #portlist)
+// loadCatalogList renders to #catlist for the standalone catalog dialog
+const pg = $("#portgenre"); if (pg) pg.addEventListener("change", renderPortList);
+const pr = $("#portrtr"); if (pr) pr.addEventListener("change", renderPortList);
+const prefresh = $("#portrefresh"); if (prefresh) prefresh.onclick = async () => {
+  prefresh.disabled = true;
+  portCatalog = null;
+  await loadPortCatalog(true);
+  prefresh.disabled = false;
+};
 function uploadZip(file) {
   if (!inst || !file) return;
   if (!/\.(zip|squashfs)$/i.test(file.name)) return snack("Pick a port .zip or a runtime .squashfs", true);
@@ -1280,6 +2092,12 @@ const FIELDS = [
   ["Hardware", [
     { k: "soc", label: "SoC" }, { k: "gpu", label: "GPU" },
     { k: "ram_mb", label: "RAM (MB)", type: "number" }, { k: "screen", label: "Screen", ph: "720x720" },
+    { k: "stream", label: "Live screen backend", wide: true,
+      select: [["auto", "Auto – best route the device offers"],
+               ["wlr", "Wayland (wlr-screencopy) – fastest"],
+               ["drm", "DRM – read the scan-out plane"],
+               ["fb", "Framebuffer – /dev/fb0"]],
+      help: "Only Wayland has the fast 16-bit/delta pipeline. DRM and the framebuffer work without a compositor, but send full frames and are slower." },
   ]],
   ["Front end", [
     { k: "fe_proc", label: "Process name", ph: "emulationstation", help: "checked with pidof; release needs it running" },
@@ -1300,7 +2118,7 @@ const FIELDS = [
     { k: "notes", label: "Notes", type: "textarea", wide: true, ph: "e.g. never reboot over SSH; the user also tests on it" },
   ]],
 ];
-const DEFAULTS = { port: 22, user: "root", auth: "password", cfw: "Knulli", guard: "enforce", autoconnect: true, poll: true, enabled: true, approval: "auto" };
+const DEFAULTS = { port: 22, user: "root", auth: "password", cfw: "Knulli", guard: "enforce", autoconnect: true, poll: true, enabled: true, approval: "auto", stream: "auto" };
 
 function openEditor(d) {
   editing = d ? d.id : null; edDev = d;
@@ -1681,6 +2499,18 @@ $("#setform").addEventListener("submit", async e => {
 refresh(); refreshEvents();
 setInterval(refresh, 2000);
 setInterval(refreshEvents, 4000);
+
+function livePadPress(name) {
+  if (name === "up" || name === "down" || name === "left" || name === "right") {
+    const ax = (name === "left" || name === "right") ? 7 : 6;
+    const v = (name === "right" || name === "down") ? 1 : -1;
+    qInput([3, ax, v]);
+    setTimeout(() => qInput([3, ax, 0]), 100);
+  } else {
+    const m = PADMAP[name];
+    if (m) { qInput([2, m[1], 1]); setTimeout(() => qInput([2, m[1], 0]), 100); }
+  }
+}
 </script>
 </body>
 </html>
