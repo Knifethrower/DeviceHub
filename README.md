@@ -93,6 +93,7 @@ devhub release rg35xx
 - [User guide](docs/GUIDE.md): every feature of the dashboard
 - [Agent guide](docs/AGENTS.md): the rules and commands for AI agents
 - [HTTP API](docs/API.md)
+- [Changelog](CHANGELOG.md): what changed in each version
 
 ## License
 
