@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.8.0"     # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.9.0"     # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -281,6 +281,9 @@ def jpath(name):
 _log_lock = threading.Lock()
 
 
+LOG_STDERR = os.environ.get("DEVHUB_LOG_STDERR", "") not in ("", "0")
+
+
 def log(*a):
     line = time.strftime("%Y-%m-%d %H:%M:%S ") + " ".join(str(x) for x in a)
     with _log_lock:
@@ -289,8 +292,8 @@ def log(*a):
                 f.write(line + "\n")
         except OSError:
             pass
-        if sys.stderr.isatty():
-            print(line, file=sys.stderr)
+        if sys.stderr.isatty() or LOG_STDERR:      # the server image sets DEVHUB_LOG_STDERR: `docker logs` shows it
+            print(line, file=sys.stderr, flush=True)
 
 
 def load_json(name, default):
@@ -2657,7 +2660,7 @@ def serve_one(job, up, d):
     harbourmaster's URL in job["serve_url"]. False: serving isn't possible, so the zip is copied over SSH."""
     try:
         job["serve_tok"] = serve_add(up["path"], up["name"], own=False)
-        job["serve_url"] = serve_url(job["serve_tok"], d)
+        job["serve_url"] = serve_url(job["serve_tok"], d, md5_link=True)
         return True
     except (JobError, OSError) as e:
         job_log(job, "HTTP transfer not possible (%s): copying over SSH" % e)
@@ -2715,7 +2718,7 @@ def install_job(job, d, up, refresh, took_lock, who):
             free = int(info.get("FREE") or 0)
             if free and free < need:
                 raise JobError("not enough space: about %d MB needed, %d MB free" % (need // 1024, free // 1024))
-            target_z = serve_url(up["serve"], d)
+            target_z = serve_url(up["serve"], d, md5_link=True)
             job_log(job, "harbourmaster downloads %s from DeviceHub (%s)" % (up["name"], target_z.split("/dl/")[0]))
             job["step"] = "installing (harbourmaster downloads it from DeviceHub)"
         elif H.settings.get("install_serve") and serve_one(job, up, d):   # harbourmaster fetches it itself (md5 checked)
@@ -3191,6 +3194,13 @@ def r_index(body, q):
              "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-src 'self' https:; connect-src 'self' https:"})
 
 
+# Proxied pages are someone else's: the browser runs them sandboxed, in an origin of their own, so their scripts can't
+# use the user's session or this hub's API (served from the hub's address they would have been the hub's page). Only
+# the hub's own page may frame them; the injected script still tells it about download clicks (postMessage).
+PROXY_HEADERS = {"X-Frame-Options": "", "Content-Security-Policy":
+                 "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox; frame-ancestors 'self'"}
+
+
 @route("GET", r"/proxy/wiki/(.*)", auth=False)
 def r_wiki_proxy(body, q, path):
     """Proxy for PortMaster Wiki pages, injecting a script that intercepts download clicks."""
@@ -3223,7 +3233,7 @@ def r_wiki_proxy(body, q, path):
         else:
             html += inject
         content = html.encode("utf-8")
-    return (ctype, content, {"X-Frame-Options": "", "Content-Security-Policy": "frame-ancestors *"})
+    return (ctype, content, PROXY_HEADERS)
 
 
 @route("GET", r"/proxy/pm/(.*)", auth=False)
@@ -3249,8 +3259,8 @@ def r_pm_proxy(body, q, path):
         return ("text/plain", ("Proxy error: %s" % e).encode(), {})
     if "text/html" in ctype:
         html = content.decode("utf-8", "replace")
-        # Inject script before </body>
-        inject = '''
+        # Inject script before </body> (raw: its regexes have \. in them)
+        inject = r'''
 <script>
 (function() {
   // Intercept any navigation to a download URL
@@ -3364,7 +3374,7 @@ def r_pm_proxy(body, q, path):
         else:
             html += inject
         content = html.encode("utf-8")
-    return (ctype, content, {"X-Frame-Options": "", "Content-Security-Policy": "frame-ancestors *"})
+    return (ctype, content, PROXY_HEADERS)
 
 
 @route("GET", "/sw.js", auth=False)
@@ -4674,12 +4684,16 @@ def local_ip_for(host):
         raise JobError("can't tell which of this machine's addresses %s would reach" % host)
 
 
-def serve_url(tok, d):
+def serve_url(tok, d, md5_link=False):
+    """Where the device downloads a served file. md5_link (harbourmaster installs): <name>.md5?md5=<hex>, which every
+    PortMaster checks: one that knows ?md5= downloads <name> and checks it against the link, an older one fetches the
+    .md5 file (served next to the file) and then <name>. A plain <name>?md5= went unchecked on those."""
     e = H.serves.get(tok)
     if not e:
         raise JobError("the file to send is gone (its transfer ended)")
     port = FILE_PORT if H.file_srv else PORT
-    return "http://%s:%d/dl/%s/%s?md5=%s" % (local_ip_for(d["host"]), port, tok, urllib.parse.quote(e["name"]), e["md5"])
+    return "http://%s:%d/dl/%s/%s%s?md5=%s" % (local_ip_for(d["host"]), port, tok, urllib.parse.quote(e["name"]),
+                                               ".md5" if md5_link else "", e["md5"])
 
 
 # Under WSL (NAT networking) the devices can't reach a server inside WSL: Windows Python runs winserve.py, which
@@ -4711,7 +4725,7 @@ def win_python():
 
 def win_manifest():
     with H.lock:
-        items = {t: {"path": wslpath_w(e["path"]), "name": e["name"]} for t, e in H.serves.items()}
+        items = {t: {"path": wslpath_w(e["path"]), "name": e["name"], "md5": e["md5"]} for t, e in H.serves.items()}
     tmp = jpath("serves.json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(items, f)
@@ -4741,7 +4755,11 @@ def win_server_up():
 
 def send_served(h, tok, name):
     e = H.serves.get(tok)
-    if not e or urllib.parse.unquote(name) != e["name"]:
+    name = urllib.parse.unquote(name)
+    if e and name == e["name"] + ".md5":     # what an older harbourmaster fetches for a <name>.md5 link
+        h.reply(200, "text/plain", ("%s  %s\n" % (e["md5"], e["name"])).encode())
+        return STREAMED
+    if not e or name != e["name"]:
         h.reply(404, "text/plain", b"not found")
         return STREAMED
     h.send_response(200)
@@ -5271,60 +5289,27 @@ def r_input_event(body, q, dev):
     evs = body.get("ev") or []
     if not isinstance(evs, list):
         raise ApiError(400, "ev must be a list")
-    # type 5 = ping
     ping_seq = body.get("ping")
-    # build datagram
+    # datagram: b"DHIN", secret u32, count u16, then events: 1 key (code u16, value u8), 2 button (code u16,
+    # value u8), 3 axis (axis u8, value i32), 4 sync, 5 ping (seq u32)
     import struct as _st
-    payload = b"DHIN" + _st.pack("<IHH", s["secret"], len(evs) + (1 if ping_seq is not None else 0), 0)
-    # rebuild count correctly
-    n = len(evs) + (1 if ping_seq is not None else 0)
-    payload = b"DHIN" + _st.pack("<IH", s["secret"], n)
-    for e in evs:
-        if not isinstance(e, list) or not e:
-            continue
-        t = int(e[0])
-        if t == 1 and len(e) >= 3:          # key code val
-            payload += _st.pack("<BBH", 1, 0, 0)  # placeholder, redo below
-        # redo properly:
-    # (rebuild cleanly)
-    payload = b"DHIN" + _st.pack("<IH", s["secret"], n)
+    ev_bytes, cnt = bytearray(), 0
     for e in evs:
         if not isinstance(e, (list, tuple)) or len(e) < 2:
             continue
         t = int(e[0])
-        if t == 1 and len(e) >= 3:            # key: code, val
-            payload += _st.pack("<BHI", 1, int(e[1]) & 0xffff, 0)[:3] + bytes([int(e[2]) & 0xff])
-            # simpler: type(1)+code u16+val u8
-            payload = payload[:-4] + _st.pack("<BHB", 1, int(e[1]) & 0xffff, int(e[2]) & 0xff)
-        elif t == 2 and len(e) >= 3:          # button
-            payload += _st.pack("<BHB", 2, int(e[1]) & 0xffff, int(e[2]) & 0xff)
-        elif t == 3 and len(e) >= 3:          # abs: axis u8, val i32
-            payload += _st.pack("<BBi", 3, int(e[1]) & 0xff, int(e[2]))
-        elif t == 4:
-            payload += _st.pack("<B", 4)
-        else:
-            # skip
-            n -= 1
-    if ping_seq is not None:
-        payload = payload[:-2] + _st.pack("<H", n - (1 if ping_seq is None else 0)) + payload[len(payload):] if False else payload
-    # fix count field (offset 8, 2 bytes) based on actual appended events is complex; recompute by counting:
-    # Easiest: rebuild from scratch cleanly:
-    ev_bytes = bytearray()
-    cnt = 0
-    for e in evs:
-        if not isinstance(e, (list, tuple)) or len(e) < 2:
-            continue
-        t = int(e[0])
-        if t == 1 and len(e) >= 3:
-            ev_bytes += _st.pack("<BHB", 1, int(e[1]) & 0xffff, int(e[2]) & 0xff); cnt += 1
-        elif t == 2 and len(e) >= 3:
-            ev_bytes += _st.pack("<BHB", 2, int(e[1]) & 0xffff, int(e[2]) & 0xff); cnt += 1
+        if t in (1, 2) and len(e) >= 3:
+            ev_bytes += _st.pack("<BHB", t, int(e[1]) & 0xffff, int(e[2]) & 0xff)
         elif t == 3 and len(e) >= 3:
-            ev_bytes += _st.pack("<BBi", 3, int(e[1]) & 0xff, int(e[2])); cnt += 1
+            ev_bytes += _st.pack("<BBi", 3, int(e[1]) & 0xff, int(e[2]))
         elif t == 4:
-            ev_bytes += _st.pack("<B", 4); cnt += 1
+            ev_bytes += _st.pack("<B", 4)
+        else:
+            continue
+        cnt += 1
     if ping_seq is not None:
-        ev_bytes += _st.pack("<BI", 5, int(ping_seq) & 0xffffffff); cnt += 1
+        ev_bytes += _st.pack("<BI", 5, int(ping_seq) & 0xffffffff)
+        cnt += 1
     payload = b"DHIN" + _st.pack("<IH", s["secret"], cnt) + bytes(ev_bytes)
     sock = s["sock"]
     try:
@@ -6163,6 +6148,14 @@ def upkeep_job(dev):
 class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def handle_error(self, request, client_address):
+        """A browser closing a tab or reloading drops its connections: that's not an error (socketserver printed a
+        traceback for each, burying real ones). Anything else goes to the log."""
+        err = sys.exc_info()[1]
+        if isinstance(err, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)):
+            return
+        log("http error from %s:" % (client_address[0],), traceback.format_exc().rstrip())
 
 
 HTTPD = None

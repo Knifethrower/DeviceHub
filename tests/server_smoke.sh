@@ -8,9 +8,12 @@ set -e
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 PY=${PYTHON:-python3}
 T=$(mktemp -d)
-HUB=18798; DEVPORT=12298
+# free ports, and no hub of the caller's: an agent's DEVHUB_URL/TOKEN would send this test's devhub calls to its real hub
+unset DEVHUB_URL DEVHUB_TOKEN DEVHUB_SESSION
+free_port() { "$PY" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+HUB=$(free_port); DEVPORT=$(free_port); FILEPORT=$(free_port)
 export DEVHUB_PORT=$HUB DEVHUB_DATA=$T/data DEVHUB_NO_AUTOSTART=1 DEVHUB_NAME=server-smoke
-export DEVHUB_FILE_PORT=18795 DEVHUB_PASSWORD=smoke-pw DEVHUB_BIND=127.0.0.1 DEVHUB_PUBLIC_URL=http://127.0.0.1:$HUB DEVHUB_HUB_NAME=smokehub
+export DEVHUB_FILE_PORT=$FILEPORT DEVHUB_PASSWORD=smoke-pw DEVHUB_BIND=127.0.0.1 DEVHUB_PUBLIC_URL=http://127.0.0.1:$HUB DEVHUB_HUB_NAME=smokehub
 PIDS=
 cleanup() { for p in $PIDS; do kill "$p" 2>/dev/null || true; done
             for s in /tmp/*.sock; do ssh -S "$s" -O exit x >/dev/null 2>&1 || true; done 2>/dev/null; rm -rf "$T"; }
@@ -19,15 +22,21 @@ fail() { echo "FAIL: $*" >&2; tail -n 30 "$T/data/devhubd.log" >&2 2>/dev/null; 
 ok() { echo "ok: $*"; }
 
 mkdir -p "$T/home/.ssh" "$T/ports" "$T/pm"
-# a fake PortMaster on the fake device: its harbourmaster downloads a URL and checks ?md5= like the real one
+# a fake PortMaster on the fake device, an older one that doesn't know ?md5= (DeviceHub's links must still be checked):
+# a <name>.md5 URL fetches the md5 file (query and all), then <name>; the md5 must match
 cat > "$T/pm/harbourmaster" <<'EOF'
 #!/bin/sh
 z=$(eval echo \${$#})
 cd "$(dirname "$0")"
 case "$z" in
-  http*) want=${z##*md5=}; url=${z%%\?*}; name=${url##*/}
-         curl -fsS -o "dl-$name" "$url" || { echo "download failed"; exit 1; }
-         [ "$(md5sum < "dl-$name" | cut -c1-32)" = "$want" ] || { echo "md5 mismatch"; exit 1; }
+  http*) url=${z%%\?*}; q=${z#"$url"}
+         case "$url" in
+           *.md5) want=$(curl -fsS "$z" | cut -c1-32); url=${url%.md5} ;;
+           *)     echo "no md5 to check: $z"; exit 1 ;;
+         esac
+         name=${url##*/}
+         curl -fsS -o "dl-$name" "$url$q" || { echo "download failed"; exit 1; }
+         [ -n "$want" ] && [ "$(md5sum < "dl-$name" | cut -c1-32)" = "$want" ] || { echo "md5 mismatch"; exit 1; }
          echo "installed $name from $url" >> installed.txt ;;
   *)     echo "installed $(basename "$z") from a copy" >> installed.txt ;;
 esac
@@ -176,11 +185,11 @@ installall() {   # FILE NAME -> waits for the job, prints its state
     echo "timeout"
 }
 r=$(installall "$T/game.zip" "game.zip"); [ "$r" = "done " ] || fail "install-all of a port: $r"
-grep -q "installed game.zip from http://127.0.0.1:18795/dl/" "$T/pm/installed.txt" || fail "the port wasn't fetched from DeviceHub: $(cat "$T/pm/installed.txt")"
+grep -q "installed game.zip from http://127.0.0.1:$FILEPORT/dl/" "$T/pm/installed.txt" || fail "the port wasn't fetched from DeviceHub: $(cat "$T/pm/installed.txt")"
 r=$(installall "$T/pmrel.zip" "PortMaster (2).zip"); [ "$r" = "done " ] || fail "install-all of PortMaster.zip: $r"
 grep -q "installed PortMaster.zip from http" "$T/pm/installed.txt" || fail "PortMaster.zip not installed under its own name"
 for i in $(seq 20); do   # it shuts down within a couple of seconds of the last install
-    [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18795/dl/00000000000000000000000000000000/x.zip")" = 000 ] && break
+    [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$FILEPORT/dl/00000000000000000000000000000000/x.zip")" = 000 ] && break
     [ "$i" = 20 ] && fail "the file server is still up after the installs"; sleep 0.5
 done
 ok "install on all: fetched from DeviceHub (md5 checked); PortMaster.zip accepted"

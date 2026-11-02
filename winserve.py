@@ -35,7 +35,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         m = DL.match(urllib.parse.urlsplit(self.path).path)
         e = entries().get(m.group(1)) if m else None
-        if not e or urllib.parse.unquote(m.group(2)) != e["name"]:
+        name = urllib.parse.unquote(m.group(2)) if m else ""
+        if e and e.get("md5") and name == e["name"] + ".md5":    # an older harbourmaster's md5 file
+            data = ("%s  %s\n" % (e["md5"], e["name"])).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if not e or name != e["name"]:
             self.send_error(404)
             return
         try:

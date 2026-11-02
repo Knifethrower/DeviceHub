@@ -6,6 +6,25 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.9.0 (2026-11-02)
+- Server image: starts again (numpy is optional, with plain-Python fallbacks; the image installs numpy and Pillow),
+  and ships the device tools (fps/, stream/, helper/, inject_script2.txt): FPS, live view and remote input work.
+- Live view: works without `ip` (the server image); a start that fails says why instead of "internal error".
+- Beacon autostart is per device and off by default: switched on the beacon list (per device, or All on/off) and
+  sent in the signed answer; on, it only starts on the network it was switched on in. A running beacon stops when
+  the device joins another network. SSH off: the beacon starts it for this boot the way the CFW's menu does.
+- muOS: a front-end stop no longer leaves the menu running (another copy per stop/start). Devices added earlier
+  get fixed preset fields at start (`PRESET_OLD`). New spruce preset.
+- Installs: harbourmaster gets `<name>.md5?md5=<hex>` (the .md5 file is served too), so every PortMaster version
+  checks the download.
+- Proxied wiki/website pages run sandboxed (their own origin) and only the hub's page may frame them; the page
+  takes download messages only from that frame. The wiki's download catching works (its regexes were escaped twice).
+- Remote input needs the lock for agents; `devhub fps` reports why the monitor didn't start, and exits 1 with no
+  readings.
+- Logs: `DEVHUB_LOG_STDERR=1` (set in the image) also writes the log to stderr; a dropped browser connection no
+  longer prints a traceback.
+- Tests: the smoke tests use free ports and never the caller's hub.
+
 ## 1.8.0 (2026-10-31)
 - Console: *Save* downloads the whole log file from the device (a port's log from Installed ports, or any followed
   file).

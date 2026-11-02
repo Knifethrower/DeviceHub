@@ -23,6 +23,7 @@ Open the page, log in, and press **Add device > Download devicehub.zip**. Withou
 | `DEVHUB_PUBLIC_URL` | the URL beacons call (default: the address your browser used when downloading the port) |
 | `DEVHUB_HUB_NAME` | the hub's name on the device's screen and in its SSH key comment |
 | `DEVHUB_BIND`, `DEVHUB_PORT`, `DEVHUB_DATA` | listen address (0.0.0.0), port (8765), data folder |
+| `DEVHUB_LOG_STDERR` | `1` (the image's default): the log (`data/devhubd.log`) also goes to stderr, so `docker logs` shows it |
 
 ## Adding a handheld
 

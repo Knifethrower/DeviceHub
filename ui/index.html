@@ -1625,6 +1625,9 @@ function renderPortList() {
 const ps = $("#portsearch"); if (ps) ps.addEventListener("input", renderPortList);
 // Listen for messages from the proxied PortMaster website iframe
 window.addEventListener("message", e => {
+  // only from the wiki/website frame (any other window could post one and fill in an install)
+  const wf = $("#wikiframe");
+  if (!wf || e.source !== wf.contentWindow) return;
   if (e.data && e.data.type === "pm-download") {
     const url = e.data.url;
     const title = e.data.title || "Port";
