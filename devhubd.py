@@ -12,7 +12,10 @@ with openssl and a key file only this user can read (data/secret.key) on Linux.
 """
 import base64, collections, errno, hashlib, http.server, io, json, os, re, secrets, shlex, shutil, signal, socket
 import queue, struct, subprocess, sys, threading, time, traceback, urllib.parse, zipfile, zlib
-import numpy as np
+try:                                    # fast frame conversion; without it screenshots and the live view
+    import numpy as np                  # use the plain-Python fallbacks below (slower, same results)
+except Exception:
+    np = None
 from concurrent.futures import ThreadPoolExecutor
 try:                                    # JPEG for the live view is ~10x cheaper to encode than PNG
     from PIL import Image as _PILImage
@@ -2127,6 +2130,39 @@ def png_bytes(w, h, rows, level=6):
             chunk(b"IDAT", zlib.compress(b"".join(rows), level)) + chunk(b"IEND", b""))
 
 
+_RGB565 = None
+
+
+def _rgb565_table():
+    """RGB565 value -> 3 RGB bytes, made once (the plain-Python path without numpy)."""
+    global _RGB565
+    if _RGB565 is None:
+        _RGB565 = [bytes((((v >> 11) & 31) * 255 // 31, ((v >> 5) & 63) * 255 // 63, (v & 31) * 255 // 31))
+                   for v in range(65536)]
+    return _RGB565
+
+
+def fb_to_rgb_rows(raw, w, h, stride, bpp):
+    """Framebuffer rows to a list of h RGB rows (bytes), without numpy: C-speed slicing for 32/24 bpp,
+    a lookup table for RGB565."""
+    if len(raw) < h * stride:
+        raise ValueError("short frame: %d < %d" % (len(raw), h * stride))
+    rows = []
+    if bpp in (32, 24):
+        n = bpp // 8
+        for y in range(h):
+            src = raw[y * stride:y * stride + w * n]
+            row = bytearray(w * 3)
+            row[0::3], row[1::3], row[2::3] = src[2::n], src[1::n], src[0::n]
+            rows.append(bytes(row))
+    else:
+        table = _rgb565_table()
+        for y in range(h):
+            v = memoryview(bytes(raw[y * stride:y * stride + w * 2])).cast("H")   # little-endian devices
+            rows.append(b"".join(table[x] for x in v))
+    return rows
+
+
 def fb_to_rgb(raw, w, h, stride, bpp):
     """Framebuffer rows (BGRA/BGR little-endian, or RGB565) to an (h, w, 3) uint8 RGB array.
 
@@ -2152,6 +2188,8 @@ def fb_to_rgb(raw, w, h, stride, bpp):
 def fb_to_png(raw, w, h, stride, bpp, level=6):
     """Framebuffer rows to an RGB PNG. level: 2 compresses a live frame a lot cheaper than a saved
     screenshot (screenshots keep 6)."""
+    if np is None:
+        return png_bytes(w, h, [b"\x00" + r for r in fb_to_rgb_rows(raw, w, h, stride, bpp)], level)
     px = fb_to_rgb(raw, w, h, stride, bpp)
     rows = np.zeros((h, 1 + w * 3), dtype=np.uint8)
     rows[:, 1:] = px.reshape(h, w * 3)
@@ -2163,6 +2201,10 @@ def fb_to_jpeg(raw, w, h, stride, bpp, quality=75):
     if not PIL_OK:
         return None
     buf = io.BytesIO()
+    if np is None:
+        _PILImage.frombytes("RGB", (w, h), b"".join(fb_to_rgb_rows(raw, w, h, stride, bpp))).save(
+            buf, "JPEG", quality=quality, subsampling=2, optimize=False)
+        return buf.getvalue()
     _PILImage.fromarray(fb_to_rgb(raw, w, h, stride, bpp), "RGB").save(
         buf, "JPEG", quality=quality, subsampling=2, optimize=False)
     return buf.getvalue()
@@ -2336,6 +2378,10 @@ def save_raw_shot(dev, d, raw, w, h, pitch, bpp):
 
 def rotate_cw(raw, w, h, pitch, px):
     """Turn a buffer 90 degrees clockwise: a landscape device whose panel scans out in portrait."""
+    if np is None:
+        rows = [raw[y * pitch:y * pitch + w * px] for y in range(h - 1, -1, -1)]
+        out = b"".join(r[x * px:x * px + px] for x in range(w) for r in rows)
+        return out, h, w, h * px
     arr = np.frombuffer(raw, dtype=np.uint8).reshape(h, pitch)[:, :w * px].reshape(h, w, px)
     rot = np.transpose(arr, (1, 0, 2))[:, ::-1, :].reshape(w, h * px)
     return rot.tobytes(), h, w, h * px
@@ -3894,7 +3940,10 @@ class StreamReceiver(threading.Thread):
                 prev = self.frame[1] if self.frame else None
             if prev is None or len(prev) != orig:
                 return   # no reference frame yet; wait for a keyframe
-            raw = bytes(np.frombuffer(payload, dtype=np.uint8) ^ np.frombuffer(prev, dtype=np.uint8))
+            if np is not None:
+                raw = bytes(np.frombuffer(payload, dtype=np.uint8) ^ np.frombuffer(prev, dtype=np.uint8))
+            else:
+                raw = (int.from_bytes(payload, "little") ^ int.from_bytes(prev, "little")).to_bytes(orig, "little")
         else:
             raw = payload
         with self.lock:
