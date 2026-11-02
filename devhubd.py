@@ -4075,6 +4075,13 @@ def server_ip_for(host):
         return None
 
 
+# Writing a helper to /tmp: sudo only when the file (or, if it isn't there yet, its folder) isn't the user's to write.
+# Deciding by the folder above made /tmp files root's for a non-root user (dArkOS's ark), which then couldn't chmod
+# them: the input helper stayed non-executable and remote input never started.
+UPLOAD_SUDO = ('P=%s; S=""; D="$(dirname "$P")"; [ "$(id -u)" = 0 ] || [ -w "$P" ] || '
+               '{ [ ! -e "$P" ] && [ -w "$D" ]; } || S="sudo -n"; ')
+
+
 def upload_streamer(d, name, remote):
     """Push the streamer binary to /tmp on the device, but only when it is not already there (identical
     size AND checksum, or size alone when the device has no sha1sum; two builds can share the size)."""
@@ -4089,7 +4096,8 @@ def upload_streamer(d, name, remote):
     if rc == 0 and lines and lines[0].strip() == str(sz):
         if len(lines) < 2 or lines[1].split()[0] == want:
             return
-    rc, out, err = ssh_run(d, "cat > %s && chmod 700 %s && echo ok" % (remote, remote), inp=open(p, "rb").read(), timeout=60)
+    rc, out, err = ssh_run(d, (UPLOAD_SUDO + '$S sh -c \'cat > "$1" && chmod 755 "$1"\' sh "$P" && echo ok') % shlex.quote(remote),
+                           inp=open(p, "rb").read(), timeout=60)
     if rc != 0 or out.strip() != b"ok":
         raise ApiError(500, "streamer upload failed: %s" % err.decode("utf-8", "replace").strip()[-200:])
 
@@ -5183,8 +5191,7 @@ def _input_upload(d):
         raise ApiError(500, "input helper binary is missing on the hub (helper/dhinput-aarch64)")
     remote = "/tmp/dhinput"
     # stream the file over the shared connection directly to its final path
-    cmd = ('P=%s; S=""; D="$(dirname "$P")"; [ "$(id -u)" = 0 ] || [ -w "$(dirname "$D")" ] || S="sudo -n"; '
-           '$S mkdir -p "$D" && exec $S sh -c \'cat > "$1"\' sh "$P"') % shlex.quote(remote)
+    cmd = (UPLOAD_SUDO + 'exec $S sh -c \'cat > "$1" && chmod 755 "$1"\' sh "$P"') % shlex.quote(remote)
     p = subprocess.Popen(ssh_args(d, cmd), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     try:
         with open(INPUT_HELPER, "rb") as f:
@@ -5200,7 +5207,6 @@ def _input_upload(d):
     if rc != 0:
         err = p.stderr.read().decode("utf-8", "replace").strip()
         raise ApiError(500, "could not upload the input helper: %s" % (err or "ssh exit %d" % rc))
-    ssh_run(d, "chmod 755 %s" % shlex.quote(remote), timeout=15)
     return remote
 
 
