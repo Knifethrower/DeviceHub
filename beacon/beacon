@@ -5,10 +5,13 @@
 #
 #   beacon    port            what the port launcher runs: announce once and say so on screen, start the
 #                             background beacon, install autostart if beacon.conf asks for it
-#   beacon    daemon          the background beacon: announce at boot once the network is up, then every minute,
-#                             on an IP change and after a resume from sleep
+#   beacon    daemon [boot]   the background beacon: announce once the network is up, then every minute, on an IP
+#                             change and after a resume from sleep. It keeps running until the device joins another
+#                             network (another Wi-Fi name, or another router), then stops. "boot" (the boot hook):
+#                             it only starts on the network autostart was switched on in.
 #   beacon    once            announce once, print the hub's answer
-#   beacon    autostart install|remove|status
+#   beacon    autostart on|off|status   switch the boot hook on (remembering this network) or off; the choice is
+#                             kept in devicehub/autostart and wins over beacon.conf. The hub can switch it too.
 #   beacon    stop            stop the background beacon
 #
 # Protocol (see docs/SERVER.md): GET /api/beacon/hello gives a one-time nonce; POST /api/beacon sends key=value
@@ -21,6 +24,9 @@ CONF="$HERE/beacon.conf"
 [ -f "$CONF" ] || { echo "beacon: $CONF is missing (download the port from your DeviceHub again)" >&2; exit 2; }
 . "$CONF"                                    # HUB_URL, HUB_KEY, HUB_NAME, AUTOSTART
 [ -f "$HERE/device.env" ] && . "$HERE/device.env"   # facts the port launcher read from PortMaster (CFW, device, screen)
+PREF="$HERE/autostart"                       # 1/0: this device's own autostart choice (by hand or from the hub)
+[ -s "$PREF" ] && AUTOSTART=$(head -c 1 "$PREF")
+NETFILE="$HERE/autostart.net"                # the network autostart belongs to: ssid=..., gw=<router MAC>
 TMP=${TMPDIR:-/tmp}/devicehub-beacon.$$
 PIDFILE=/tmp/devicehub-beacon.pid
 LOG=/tmp/devicehub-beacon.log
@@ -30,6 +36,7 @@ say() { echo "$*"; [ -n "$TTY" ] && [ -w "$TTY" ] && echo "$*" > "$TTY"; return 
 log() { [ "$QUIET" = 1 ] && { echo "$(date '+%F %T') $*" >> "$LOG"; return 0; }; say "$*"; }
 cleanup() { rm -f "$TMP".*; }
 trap cleanup EXIT
+trap 'exit 143' TERM INT HUP                  # `beacon stop` (or a replaced daemon) still cleans up its files
 
 # ---------------------------------------------------------------- HMAC-SHA256 (openssl if it works, else pure sh)
 
@@ -174,6 +181,44 @@ install_hub_key() {   # PUBKEY line from the hub (verified): add it to the SSH u
 
 ANSWER_STATE=""; ANSWER_MSG=""; ANSWER_INTERVAL=60
 
+wifi_ssid() {   # the Wi-Fi network's name, by whatever this CFW has
+    i=$(ip route 2>/dev/null | awk '/^default/ { print $5; exit }'); i=${i:-wlan0}
+    { iwgetid -r 2>/dev/null
+      iw dev "$i" link 2>/dev/null | sed -n 's/^[[:space:]]*SSID: //p'
+      wpa_cli -i "$i" status 2>/dev/null | sed -n 's/^ssid=//p'
+      nmcli -t -f active,ssid dev wifi 2>/dev/null | sed -n 's/^yes://p'
+    } | grep -v '^$' | head -1
+}
+
+router_mac() {   # the default gateway's MAC: the network without a Wi-Fi name (or a cable)
+    g=$(ip route 2>/dev/null | awk '/^default/ { print $3; exit }')
+    [ -n "$g" ] && awk -v g="$g" '$1 == g && $4 != "00:00:00:00:00:00" { print $4; exit }' /proc/net/arp 2>/dev/null
+}
+
+net_save() { { echo "ssid=$(wifi_ssid)"; echo "gw=$(router_mac)"; } > "$NETFILE"; }
+
+same_net() {   # SSID GW: 0 = the device is on that network now (or on none at all, e.g. Wi-Fi asleep)
+    s=$(wifi_ssid); g=$(router_mac)
+    [ -z "$s" ] && [ -z "$g" ] && return 0
+    [ -n "$1" ] && [ -n "$s" ] && { [ "$s" = "$1" ]; return; }
+    [ -n "$2" ] && [ -n "$g" ] && { [ "$g" = "$2" ]; return; }
+    return 0
+}
+
+home_net() {   # 0 = on the network autostart was switched on in (or none was recorded)
+    [ -s "$NETFILE" ] || return 0
+    ws=$(sed -n 's/^ssid=//p' "$NETFILE"); wg=$(sed -n 's/^gw=//p' "$NETFILE")
+    [ -z "$ws" ] && [ -z "$wg" ] && return 0
+    [ -n "$ws" ] && [ "$(wifi_ssid)" = "$ws" ] && return 0
+    [ -n "$wg" ] && [ "$(router_mac)" = "$wg" ] && return 0
+    return 1
+}
+
+autostart_set() {   # 1/0, from the user (autostart on|off) or the hub's answer: remember it, then (un)hook
+    printf '%s\n' "$1" > "$PREF"; AUTOSTART=$1
+    if [ "$1" = 1 ]; then net_save; autostart_install; else autostart_remove; fi
+}
+
 announce() {
     again=$1
     ANSWER_STATE=""; ANSWER_MSG=""
@@ -201,6 +246,7 @@ announce() {
         echo "ssh=$(ssh_listening)"
         echo "keyok=$(hub_key_state)"
         echo "autostart=$(autostart_state)"
+        echo "ssid=$(clean "$(wifi_ssid)")"
         echo "width=$(clean "$DISPLAY_WIDTH")"
         echo "height=$(clean "$DISPLAY_HEIGHT")"
         echo "ram=$(clean "$DEVICE_RAM")"
@@ -226,6 +272,14 @@ announce() {
     ANSWER_INTERVAL=$(sed -n 's/^interval=//p' "$TMP.body" | head -1)
     case "$ANSWER_INTERVAL" in ''|*[!0-9]*) ANSWER_INTERVAL=60 ;; esac
     pub=$(sed -n 's/^pubkey=//p' "$TMP.body" | head -1)
+    hubwant=$(sed -n 's/^autostart=//p' "$TMP.body" | head -1)   # the user switched it on the hub's page
+    cur=$(autostart_state)
+    if { [ "$hubwant" = 1 ] || [ "$hubwant" = 0 ]; } && [ "$cur" != none ] &&
+       { [ "$hubwant" != "$cur" ] || [ "$hubwant" != "$AUTOSTART" ]; } && [ "$hubwant" != "$HUB_TRIED" ]; then
+        HUB_TRIED=$hubwant                                         # once per run: a hook that can't go in isn't retried every minute
+        log "${HUB_NAME:-DeviceHub} switches autostart $( [ "$hubwant" = 1 ] && echo on || echo off)"
+        autostart_set "$hubwant" >/dev/null 2>&1
+    fi
     if [ "$ANSWER_STATE" = approved ] && [ -n "$pub" ] && [ "$(hub_key_state)" = 0 ]; then
         install_hub_key "$pub" && [ "$again" != again ] && { announce again; return $?; }   # tell the hub at once
     fi
@@ -244,11 +298,47 @@ cfw_kind() {
         rocknix*|jelos*|amberelec*|emuelec*|unofficialos*|351elec*) echo libreelec ;;
         muos*) echo muos ;;
         arkos*|darkos*|"ark os"*) echo systemd ;;
+        spruce*) echo spruce ;;
         *) if [ -d /storage/.config/system.d ]; then echo libreelec
+           elif [ -d /mnt/SDCARD/spruce/scripts ]; then echo spruce
            elif [ -f /userdata/system/custom.sh ] || [ -d /userdata/system ]; then echo batocera
            elif [ -d /etc/systemd/system ]; then echo systemd
            else echo none; fi ;;
     esac
+}
+
+ssh_start() {   # SSH is off: start it the way the CFW's own menu does, for this boot only (no setting changed)
+    case "$(cfw_kind)" in
+        systemd)   # ArkOS / dArkOS: "Enable Remote Services" starts ssh.service (it isn't enabled at boot)
+            $SUDO systemctl start ssh.service 2>/dev/null || $SUDO systemctl start sshd.service ;;
+        libreelec)   # ROCKNIX / JELOS / AmberELEC
+            systemctl start sshd.service 2>/dev/null || systemctl start dropbear.service ;;
+        batocera)   # Knulli / Batocera: S50dropbear does nothing while system.ssh.enabled is 0
+            [ "$(batocera-settings-get system.ssh.enabled 2>/dev/null)" = 0 ] && return 1
+            /etc/init.d/S50dropbear start ;;
+        muos)   # what /opt/muos/script/web/service.sh does when web/sshd is on
+            [ -x /opt/openssh/sbin/sshd ] || return 1
+            chmod -R 700 /opt/openssh/var /opt/openssh/etc 2>/dev/null
+            (/opt/openssh/sbin/sshd -D >/dev/null 2>&1 &) ;;
+        spruce)   # spruce's own start: its dropbear, its keys, its wrapper
+            ( . /mnt/SDCARD/spruce/scripts/helperFunctions.sh && . /mnt/SDCARD/spruce/scripts/network/sshFunctions.sh &&
+              start_ssh_process ) >/dev/null 2>&1 ;;
+        *) return 1 ;;
+    esac
+}
+
+ssh_ensure() {   # called at start: if nothing listens on port 22, try to switch SSH on, and say what happened
+    [ "$(ssh_listening)" = up ] && return 0
+    if ssh_start; then
+        i=0
+        while [ "$(ssh_listening)" = down ] && [ $i -lt 10 ]; do sleep 1; i=$((i + 1)); done
+    fi
+    if [ "$(ssh_listening)" = up ]; then
+        log "SSH was off: switched it on for this boot (${HUB_NAME:-DeviceHub} needs it)"
+    else
+        log "!! SSH is not running on this device and could not be started: switch it on in the CFW's settings"
+        return 1
+    fi
 }
 
 muos_init_dir() {
@@ -263,8 +353,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/bin/sh "$HERE/beacon" daemon
-Restart=always
+ExecStart=/bin/sh "$HERE/beacon" daemon boot
+Restart=on-failure
 RestartSec=30
 $1
 
@@ -282,7 +372,7 @@ autostart_state() {
         libreelec) [ -e /storage/.config/system.d/multi-user.target.wants/$UNIT ] && echo 1 || echo 0 ;;
         muos) d=$(muos_init_dir); [ -n "$d" ] && [ -f "$d/devicehub-beacon.sh" ] && echo 1 || echo 0 ;;
         systemd) [ -e /etc/systemd/system/multi-user.target.wants/$UNIT ] && echo 1 || echo 0 ;;
-        *) echo 0 ;;
+        *) echo none ;;     # no boot hook known on this CFW: run the port by hand
     esac
 }
 
@@ -292,7 +382,7 @@ autostart_install() {
             f=/userdata/system/custom.sh
             [ -f "$f" ] || printf '#!/bin/sh\n' > "$f"
             sed -i "/^$MARK\$/,/^$MARK end\$/d" "$f"      # an older block (it may name an older path) is replaced
-            printf '%s\nif [ "$1" = start ]; then (sh "%s/beacon" daemon >/dev/null 2>&1 &); fi\n%s end\n' \
+            printf '%s\nif [ "$1" = start ]; then (sh "%s/beacon" daemon boot >/dev/null 2>&1 &); fi\n%s end\n' \
                 "$MARK" "$HERE" "$MARK" >> "$f" && chmod +x "$f" && say "autostart: added to $f" ;;
         libreelec)
             unit_text "" > /storage/.config/system.d/$UNIT && systemctl daemon-reload &&
@@ -300,7 +390,7 @@ autostart_install() {
         muos)
             d=$(muos_init_dir)
             [ -n "$d" ] || { say "autostart: no MUOS/init folder found"; return 1; }
-            printf '#!/bin/sh\n%s\n(sh "%s/beacon" daemon >/dev/null 2>&1 &)\n' "$MARK" "$HERE" > "$d/devicehub-beacon.sh" &&
+            printf '#!/bin/sh\n%s\n(sh "%s/beacon" daemon boot >/dev/null 2>&1 &)\n' "$MARK" "$HERE" > "$d/devicehub-beacon.sh" &&
                 chmod +x "$d/devicehub-beacon.sh" &&
                 say "autostart: $d/devicehub-beacon.sh (switch on Configuration > Custom > User Init Scripts)" ;;
         systemd)
@@ -330,11 +420,24 @@ daemon() {
     running && exit 0
     echo $$ > "$PIDFILE"
     QUIET=1
-    log "beacon started (hub $HUB_URL)"
+    boot=$1; net_ssid=""; net_gw=""
+    log "beacon started (hub $HUB_URL)${boot:+ by the boot hook}"
     last=0; lastip=""; wait=5; state=""
     while :; do
         now=$(date +%s)
-        set -- $(route_to_hub)
+        set -- $(route_to_hub)                       # $1 = our address towards the hub (empty: no network)
+        if [ -z "$net_ssid$net_gw" ] && [ -n "$1" ]; then   # first time on a network: that's ours
+            if [ "$boot" = boot ] && ! home_net; then
+                log "not on the network autostart belongs to ($(sed -n 's/^ssid=//p' "$NETFILE")): stopping"
+                rm -f "$PIDFILE"; exit 0
+            fi
+            net_ssid=$(wifi_ssid); net_gw=$(router_mac)
+            log "on network ${net_ssid:-?} (router ${net_gw:-?})"
+            ssh_ensure || true
+        elif [ -n "$net_ssid$net_gw" ] && ! same_net "$net_ssid" "$net_gw"; then
+            log "joined another network ($(wifi_ssid)): stopping"
+            rm -f "$PIDFILE"; exit 0
+        fi
         due=$((last + ANSWER_INTERVAL))
         # announce when due, when the IP changed, or when the wall clock jumped (a resume from sleep)
         if [ -n "$1" ] && { [ "$now" -ge "$due" ] || [ "$1" != "$lastip" ] || [ "$now" -lt "$last" ]; }; then
@@ -355,17 +458,17 @@ case "$1" in
     once)
         if announce; then say "state=$ANSWER_STATE"; [ -n "$ANSWER_MSG" ] && say "$ANSWER_MSG"; exit 0
         else say "failed: $ANSWER_MSG"; exit 1; fi ;;
-    daemon) daemon ;;
+    daemon) daemon "$2" ;;
     stop) running && kill "$(cat "$PIDFILE")"; rm -f "$PIDFILE" ;;
     autostart)
         case "$2" in
-            install) autostart_install ;;
-            remove) autostart_remove ;;
+            on|install) autostart_set 1 ;;
+            off|remove) autostart_set 0 ;;
             *) echo "autostart: $(autostart_state) ($(cfw_kind))" ;;
         esac ;;
     port)
         say "DeviceHub beacon -> ${HUB_NAME:-DeviceHub} ($HUB_URL)"
-        [ "$(ssh_listening)" = down ] && say "!! SSH is not running on this device: switch it on in the CFW's settings"
+        ssh_ensure
         tries=0
         until announce; do
             tries=$((tries + 1))
@@ -379,7 +482,10 @@ case "$1" in
             denied) say "Refused: ${HUB_NAME:-DeviceHub} turned this device down${ANSWER_MSG:+ - $ANSWER_MSG}" ;;
             "") say "Not announced yet; the background beacon keeps trying" ;;
         esac
-        [ "$AUTOSTART" = 1 ] && autostart_install     # (re)written each run, so it always names this copy
+        if [ "$AUTOSTART" = 1 ]; then                 # (re)written each run, so it always names this copy
+            [ -s "$NETFILE" ] || net_save
+            autostart_install
+        fi
         if ! running; then
             if command -v setsid >/dev/null 2>&1; then setsid sh "$HERE/beacon" daemon >/dev/null 2>&1 < /dev/null &
             else nohup sh "$HERE/beacon" daemon >/dev/null 2>&1 < /dev/null & fi

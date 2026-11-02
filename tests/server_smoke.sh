@@ -89,6 +89,17 @@ grep -q "devicehub@smokehub" "$T/home/.ssh/authorized_keys" || fail "hub key not
 grep -q "^\[127.0.0.1\]:$DEVPORT ssh-rsa " "$T/data/known_hosts/hub" || fail "host key not pinned"
 ok "approved: hub key installed, host key pinned"
 
+# --- autostart: the user's per-device choice, carried in the signed answer; the beacon remembers it
+curl -s -H "X-DevHub-Token: $TOK" -X POST -d '{"on":true}' "http://127.0.0.1:$HUB/api/beacons/$BID/autostart" | grep -q "only the user" ||
+    fail "a token switched autostart"
+$C -X POST -d '{"client":"ui","on":true}' "http://127.0.0.1:$HUB/api/beacons/$BID/autostart" | grep -q '"ok": true' || fail "autostart on"
+B once | grep -q "switches autostart on" || fail "the beacon didn't get autostart on"
+[ "$(cat "$T/ports/devicehub/autostart")" = 1 ] && [ -f "$T/ports/devicehub/autostart.net" ] || fail "autostart choice not kept"
+$C -X POST -d '{"client":"ui","on":false}' "http://127.0.0.1:$HUB/api/beacons/autostart" | grep -q '"count": 1' || fail "autostart off for all"
+B once | grep -q "switches autostart off" || fail "the beacon didn't get autostart off"
+[ "$(cat "$T/ports/devicehub/autostart")" = 0 ] || fail "autostart off not kept"
+ok "autostart switched from the page, kept on the device"
+
 DEV=$($C "http://127.0.0.1:$HUB/api/state" | $PY -c 'import json,sys; b=json.load(sys.stdin)["server"]["beacons"]; print(b[0]["dev"])')
 [ "$DEV" = smoke-rg35xx ] || fail "device id: $DEV"
 for i in $(seq 40); do
