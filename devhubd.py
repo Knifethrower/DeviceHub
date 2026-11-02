@@ -126,6 +126,27 @@ CFW_PRESETS = {
     "Other": {},
 }
 
+# Earlier values of preset fields. A device keeps its own copy of its preset's fields (they can be edited), so a
+# fixed preset never reached the devices already added; at start, a field still holding one of these exact old values
+# (so nobody edited it) gets the current one. Add the old value here when you change a preset's field.
+PRESET_OLD = {
+    "muOS": {
+        "fe_proc": [""],
+        "fe_start": ["(. /etc/profile >/dev/null 2>&1; FRONTEND start) >/dev/null 2>&1 </dev/null &"],
+        "fe_stop": [". /etc/profile >/dev/null 2>&1; FRONTEND stop",
+                    ". /etc/profile >/dev/null 2>&1; . /opt/muos/script/var/func.sh && FRONTEND stop"],
+    },
+}
+
+
+def preset_upgrade(d):
+    """The fields of d (a device) that still hold an old preset value, updated in place; returns their names."""
+    old, cur = PRESET_OLD.get(d.get("cfw") or "", {}), CFW_PRESETS.get(d.get("cfw") or "", {})
+    done = [k for k, vals in old.items() if k in cur and d.get(k) in vals and d.get(k) != cur[k]]
+    for k in done:
+        d[k] = cur[k]
+    return done
+
 DEVICE_DEFAULTS = {
     "id": "", "name": "", "type": "", "cfw": "Other", "host": "", "port": 22, "user": "root",
     "auth": "manual",            # password (DeviceHub opens the connection) | key | manual (user opens it)
@@ -6164,12 +6185,19 @@ def main():
     load_local_presets()
     fps_finish_orphans()
     fps_kill_stale()
+    upgraded = False
     for d in load_json("devices.json", {"devices": []}).get("devices", []):
         try:
             d = clean_device(d)
             H.devices[d["id"]] = d
+            done = preset_upgrade(d)
+            if done:
+                upgraded = True
+                log("preset", d["id"], "updated from the %s preset: %s" % (d["cfw"], ", ".join(done)))
         except ApiError as e:
             log("skipping bad device", d.get("id"), e)
+    if upgraded:
+        save_devices()
     st = load_json("state.json", {})
     H.locks = st.get("locks", {})
     H.queues = st.get("queues", {})
