@@ -97,7 +97,27 @@ route_to_hub() {   # "IP IFACE" this device uses to reach the hub
     if [ -z "$src" ]; then   # no iproute: the first non-loopback IPv4 address
         src=$(ifconfig 2>/dev/null | sed -n 's/.*inet \(addr:\)\{0,1\}\([0-9.]*\).*/\2/p' | grep -v '^127\.' | head -1)
     fi
+    if [ -z "$src" ]; then   # neither (a Flatpak sandbox: RetroDECK): the kernel's own list of local addresses
+        src=$(proc_addrs | awk -v h="${h%.*}." 'index($0, h) == 1 { print; f = 1; exit } { a[NR] = $0 } END { if (!f && NR) print a[1] }')
+        [ -z "$dev" ] && dev=$(awk '$2 == "00000000" { print $1; exit }' /proc/net/route 2>/dev/null)
+    fi
     echo "$src $dev"
+}
+
+proc_addrs() {   # this device's IPv4 addresses (not loopback), from /proc/net/fib_trie: no tools needed
+    awk '/^Local:/ { l = 1 } /^Main:/ { l = 0 }
+         l && /\|-- / { a = $2 } l && /\/32 host LOCAL/ && a !~ /^127\./ && !seen[a]++ { print a }' /proc/net/fib_trie 2>/dev/null
+}
+
+host_path() {   # a path as the host sees it: inside a Flatpak, /var/data and /var/config are the app's own folders
+    p=$1
+    if [ -n "${FLATPAK_ID:-}" ]; then
+        case "$p" in
+            /var/data/*|/var/data) p="$HOME/.var/app/$FLATPAK_ID/data${p#/var/data}" ;;
+            /var/config/*|/var/config) p="$HOME/.var/app/$FLATPAK_ID/config${p#/var/config}" ;;
+        esac
+    fi
+    echo "$p" | sed 's|//*|/|g'
 }
 
 ssh_user() { id -un 2>/dev/null || echo root; }
@@ -251,8 +271,9 @@ announce() {
         echo "height=$(clean "$DISPLAY_HEIGHT")"
         echo "ram=$(clean "$DEVICE_RAM")"
         echo "cpu=$(clean "$DEVICE_CPU")"
-        echo "pm_dir=$(clean "$PM_DIR")"
-        echo "ports_dir=$(clean "$PORTS_DIR")"
+        echo "pm_dir=$(clean "$(host_path "$PM_DIR")")"
+        echo "ports_dir=$(clean "$(host_path "$PORTS_DIR")")"
+        [ -n "${FLATPAK_ID:-}" ] && echo "sandbox=flatpak:$(clean "$FLATPAK_ID")"
         echo "arch=$(uname -m)"
         echo "kernel=$(uname -r)"
         host_keys | sort -u | sed 's/^/hostkey=/'
@@ -292,6 +313,7 @@ UNIT=devicehub-beacon.service
 MARK="# devicehub-beacon"
 
 cfw_kind() {
+    [ -n "${FLATPAK_ID:-}" ] && { echo none; return; }   # a sandbox (RetroDECK): the host's boot isn't ours to hook
     c=$(echo "${CFW_NAME:-}" | tr 'A-Z' 'a-z')
     case "$c" in
         knulli*|batocera*) echo batocera ;;
@@ -421,10 +443,20 @@ daemon() {
     echo $$ > "$PIDFILE"
     QUIET=1
     boot=$1; net_ssid=""; net_gw=""
-    log "beacon started (hub $HUB_URL)${boot:+ by the boot hook}"
+    # In a Flatpak sandbox (RetroDECK) the app is PID 2, and a process left running keeps the sandbox, and Steam's
+    # idea that the game is running, alive: so the beacon goes when the app does.
+    app_cmd=""
+    if [ -n "${FLATPAK_ID:-}" ] && [ "$$" != 2 ] && [ -r /proc/2/cmdline ]; then
+        app_cmd=$(tr '\0' ' ' < /proc/2/cmdline)
+    fi
+    log "beacon started (hub $HUB_URL)${boot:+ by the boot hook}${app_cmd:+, until ${FLATPAK_ID} quits}"
     last=0; lastip=""; wait=5; state=""
     while :; do
         now=$(date +%s)
+        if [ -n "$app_cmd" ] && [ "$(tr '\0' ' ' < /proc/2/cmdline 2>/dev/null)" != "$app_cmd" ]; then
+            log "${FLATPAK_ID} quit: stopping"
+            rm -f "$PIDFILE"; exit 0
+        fi
         set -- $(route_to_hub)                       # $1 = our address towards the hub (empty: no network)
         if [ -z "$net_ssid$net_gw" ] && [ -n "$1" ]; then   # first time on a network: that's ours
             if [ "$boot" = boot ] && ! home_net; then

@@ -24,6 +24,9 @@ Releases before 1.8.0 were tagged afterwards, on the commit each one ended with;
 - Beacon autostart is per device and off by default: switched on the beacon list (per device, or All on/off) and
   sent in the signed answer; on, it only starts on the network it was switched on in. A running beacon stops when
   the device joins another network. SSH off: the beacon starts it for this boot the way the CFW's menu does.
+- Beacon in a Flatpak (RetroDECK on a Steam Deck): finds its address without `ip`/`ifconfig` (/proc/net/fib_trie), reports
+  PortMaster's folders as the host sees them (/var/data is ~/.var/app/<app>/data), has no autostart, and stops when the
+  app quits (left running it kept the sandbox, and Steam's "game running", alive).
 - muOS: a front-end stop no longer leaves the menu running (another copy per stop/start). Devices added earlier
   get fixed preset fields at start (`PRESET_OLD`). New spruce preset.
 - Installs: harbourmaster gets `<name>.md5?md5=<hex>` (the .md5 file is served too), so every PortMaster version
