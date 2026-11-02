@@ -3870,6 +3870,9 @@ def r_frontend(body, q, dev):
 # Frames only go out when the content changed, so an idle screen costs the capture alone.
 
 STREAM_PORT_FIRST = 9876
+# The streamers run with sudo for a non-root SSH user (dArkOS's ark), so stopping them needs it too: a plain pkill
+# left them running, still sending to a port the next live view (another device's) would get
+STREAM_KILL = 'S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; for n in dhstream fbstream dhcap; do $S pkill "$n" 2>/dev/null; done; true'
 STREAMS = {}        # device id -> StreamReceiver while the view is open
 
 STREAM_PROBE_SH = r"""
@@ -3902,9 +3905,11 @@ class StreamReceiver(threading.Thread):
     into a PNG for the web UI (server side, so the device stays light)."""
     daemon = True
 
-    def __init__(self, dev, port, fps, mode):
+    def __init__(self, dev, port, fps, mode, src=None):
         super().__init__()
         self.dev, self.port, self.fps, self.mode = dev, port, fps, mode
+        self.src = src           # the device's address: packets from anywhere else are dropped (a streamer left
+                                 # running elsewhere sends to the same port; its frames showed in another device's view)
         self.lock = threading.Lock()
         self.stop = False
         self.cfg = None          # (w, h, bpp) from the config packet
@@ -3933,8 +3938,10 @@ class StreamReceiver(threading.Thread):
         try:
             while not self.stop:
                 try:
-                    pkt, _ = s.recvfrom(65536)
+                    pkt, addr = s.recvfrom(65536)
                 except socket.timeout:
+                    continue
+                if self.src and addr[0] != self.src:
                     continue
                 try:
                     self.feed(pkt)
@@ -4096,7 +4103,7 @@ def stream_stop(dev, quiet=False, d=None):
         if s.ident is not None:         # a start that failed early never started it (join() would raise)
             s.join(timeout=2)           # wait for the receiver to drop its UDP socket before a restart
         if d:
-            ssh_run(d, "pkill dhstream 2>/dev/null; pkill fbstream 2>/dev/null; pkill dhcap 2>/dev/null; true", timeout=8)
+            ssh_run(d, STREAM_KILL, timeout=8)
         if not quiet:
             log("stream", dev, "stopped")
     return s
@@ -4117,7 +4124,11 @@ def r_live_start(body, q, dev):
     # the receiver is reserved first, so two starts can never pick the same UDP port
     with H.lock:
         port = stream_port()
-        s = StreamReceiver(dev, port, fps, "?")
+        try:
+            src = socket.gethostbyname(d["host"])
+        except OSError:
+            src = None              # can't tell: take what comes
+        s = StreamReceiver(dev, port, fps, "?", src)
         STREAMS[dev] = s
     try:
         rc, out, err = ssh_run(d, "sh -s -- %s" % shlex.quote(want), inp=STREAM_PROBE_SH.encode(), timeout=30)
@@ -4154,8 +4165,7 @@ def r_live_start(body, q, dev):
             raise ApiError(500, s.err)
         pre = "" if uid == "0" else "sudo -n "
         inner = "exec %s%s 2>/tmp/.dhstream.log" % (pre, " ".join(shlex.quote(x) for x in args))
-        run = ("pkill dhstream 2>/dev/null; pkill fbstream 2>/dev/null; pkill dhcap 2>/dev/null; sleep 0.2; "
-               "nohup sh -c %s >/dev/null 2>&1 &" % shlex.quote(inner))
+        run = (STREAM_KILL + "; sleep 0.2; nohup sh -c %s >/dev/null 2>&1 &" % shlex.quote(inner))
         try:
             rc, out2, err2 = ssh_run(d, run, timeout=15)
         except subprocess.TimeoutExpired:
@@ -4229,7 +4239,7 @@ def stop_streams_on_exit():
         STREAMS.clear()
     for dev, s in items:
         s.close()
-    kill = "pkill dhstream 2>/dev/null; pkill fbstream 2>/dev/null; true"
+    kill = STREAM_KILL
     for dev in [dev for dev, _ in items]:
         d = H.devices.get(dev)
         if d:

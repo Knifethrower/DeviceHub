@@ -16,6 +16,8 @@ Releases before 1.8.0 were tagged afterwards, on the commit each one ended with;
   AmberELEC, Knulli, spruce and dArkOS (no libwayland, an empty plane, GPU buffers), and leaked a GEM handle per
   frame. A start that sends nothing shows the device's streamer log.
 - `devhub push` to a non-root user (dArkOS) left a root-owned file when the folder above was read-only (/tmp).
+- Live view: stopping it on a non-root device (dArkOS) left the streamer running (it runs with sudo), still sending to a
+  port the next live view would get; the receiver now also takes packets only from its device's address.
 - Beacon autostart is per device and off by default: switched on the beacon list (per device, or All on/off) and
   sent in the signed answer; on, it only starts on the network it was switched on in. A running beacon stops when
   the device joins another network. SSH off: the beacon starts it for this boot the way the CFW's menu does.

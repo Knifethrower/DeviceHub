@@ -264,7 +264,7 @@ static int grab(const struct src *s)
         } else {
             struct dh_crtc c = { 0 };
             c.id = s->id;
-            if (ioctl(cards[s->card], DRM_GETCRTC, &c) || !c.fb) return -1;
+            if (ioctl(cards[s->card], DRM_GETCRTC, &c) || !c.fb || !c.valid) return -1;   /* an output that's off */
             fb = c.fb;
         }
         e = fbmap_get(s->card, fb);
