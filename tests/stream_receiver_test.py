@@ -149,5 +149,17 @@ if second is p1:
     fail("a new frame was not re-encoded (needed for real image changes)")
 
 s.close()
+
+# another device's streamer sending to the same port: dropped (only the device's own address is taken)
+other = dh.StreamReceiver("t2", 19872, 4, "drm", src="10.255.255.1")
+other.start()
+for _ in range(50):
+    if other.bound:
+        break
+    time.sleep(0.02)
+sb.sendto(pack_cfg(W, H, bpp), ("127.0.0.1", 19872))
+time.sleep(0.3)
+assert other.cfg is None and other.frame is None, "a packet from another address was taken"
+other.close()
 sb.close()
 print("stream-receiver test OK")

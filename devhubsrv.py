@@ -275,8 +275,8 @@ def r_beacon(h, q):
     if not re.match(r"^[A-Za-z0-9._-]+$", user):
         user = "root"
     keyok = kv.get("keyok", "0")
-    facts = {k: kv.get(k, "") for k in ("name", "cfw", "cfw_version", "hostname", "mac", "ssh", "autostart", "width",
-                                        "height", "ram", "cpu", "arch", "kernel")}
+    facts = {k: kv.get(k, "") for k in ("name", "cfw", "cfw_version", "hostname", "mac", "ssh", "autostart", "ssid",
+                                        "width", "height", "ram", "cpu", "arch", "kernel")}
     for k in ("pm_dir", "ports_dir"):     # PortMaster's own paths on the device; absolute, no shell specials
         v = kv.get(k, "")
         facts[k] = v if re.match(r"^/[A-Za-z0-9._/ -]*$", v) and ".." not in v else ""
@@ -308,6 +308,8 @@ def r_beacon(h, q):
            ("hub", HUB_NAME)]
     if state == "approved":
         out.append(("pubkey", hub_pubkey()))
+        if b.get("want_autostart") in ("1", "0"):     # the user's choice on the page; the beacon (un)hooks itself
+            out.append(("autostart", b["want_autostart"]))
     return answer(out)
 
 
@@ -389,7 +391,8 @@ def sync_device(b):
 
 def beacons_public():
     return [{k: b.get(k) for k in ("id", "state", "dev", "name", "cfw", "cfw_version", "ip", "mac", "user", "ssh", "keyok",
-                                   "autostart", "width", "height", "first", "last")} for b in H.beacons.values()]
+                                   "autostart", "want_autostart", "ssid", "width", "height", "first", "last")}
+            for b in H.beacons.values()]
 
 
 @route("POST", r"/api/beacons/([0-9a-f]{8,32})/(approve|deny|forget)")
@@ -409,6 +412,33 @@ def r_beacon_decide(body, q, bid, act):
     event(None, "beacon", "%s %s" % (b.get("name") or bid, {"approve": "approved: it gets the hub's SSH key on its next announce",
                                                             "deny": "turned down", "forget": "forgotten"}[act]), c["name"])
     return {"ok": True}
+
+
+@route("POST", r"/api/beacons(?:/([0-9a-f]{8,32}))?/autostart")
+def r_beacon_autostart(body, q, bid=None):
+    """The user switches a device's boot autostart on or off (one beacon, or every approved one without an id). The
+    beacon gets the choice in its next announce's signed answer (within a minute) and hooks or unhooks itself; on,
+    it only starts on the network it was on then. Agents can't: it's the user's setting."""
+    c = D.caller(body)
+    if not c.get("ui"):
+        raise ApiError(403, "only the user switches autostart (DeviceHub page)")
+    on = body.get("on")
+    want = "1" if on is True else "0" if on is False else ""
+    with H.lock:
+        if bid:
+            b = H.beacons.get(bid)
+            if not b:
+                raise ApiError(404, "no such beacon")
+            todo = [b]
+        else:
+            todo = [b for b in H.beacons.values() if b.get("state") == "approved"]
+        for b in todo:
+            b["want_autostart"] = want
+        save_beacons()
+    what = {"1": "on", "0": "off", "": "left to the device"}[want]
+    event(None, "beacon", "autostart %s for %s (applies on its next announce)" % (
+        what, (todo[0].get("name") or bid) if bid else "every device"), c["name"])
+    return {"ok": True, "count": len(todo)}
 
 
 # /api/state carries the beacons (and that this is a server) for the page
@@ -486,7 +516,7 @@ def r_beacon_port(h, q):
     if not D.REQ.ui:
         raise ApiError(403, "log in to download the beacon (it carries the hub's key)")
     url = PUBLIC_URL or "http://%s" % (h.headers.get("Host") or "")
-    autostart = (q.get("autostart") or ["1"])[0] == "1"
+    autostart = (q.get("autostart") or ["0"])[0] == "1"
     conf = ("# made by %s; the key lets this device announce itself (keep the port private)\n"
             "HUB_URL='%s'\nHUB_KEY='%s'\nHUB_NAME='%s'\nAUTOSTART=%d\n") % (
         HUB_NAME, url, D.BEACON_KEY, HUB_NAME.replace("'", ""), int(autostart))

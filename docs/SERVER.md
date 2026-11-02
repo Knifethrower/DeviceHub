@@ -23,6 +23,7 @@ Open the page, log in, and press **Add device > Download devicehub.zip**. Withou
 | `DEVHUB_PUBLIC_URL` | the URL beacons call (default: the address your browser used when downloading the port) |
 | `DEVHUB_HUB_NAME` | the hub's name on the device's screen and in its SSH key comment |
 | `DEVHUB_BIND`, `DEVHUB_PORT`, `DEVHUB_DATA` | listen address (0.0.0.0), port (8765), data folder |
+| `DEVHUB_LOG_STDERR` | `1` (the image's default): the log (`data/devhubd.log`) also goes to stderr, so `docker logs` shows it |
 
 ## Adding a handheld
 
@@ -32,9 +33,16 @@ Open the page, log in, and press **Add device > Download devicehub.zip**. Withou
 4. On its next announce (within 10 s) the beacon adds the hub's SSH key to the device's `authorized_keys`, and the
    device appears as a card, filled in from PortMaster's own device info (CFW, name, screen, RAM) and the CFW preset.
 
-With autostart (the default download) the port also installs a boot hook, so the device announces itself after every
-boot, IP change and resume, with nothing to run: Knulli/Batocera `custom.sh`, ROCKNIX/JELOS/AmberELEC a unit in
-`/storage/.config/system.d`, muOS `MUOS/init` (User Init Scripts on), ArkOS/dArkOS a systemd unit.
+Once run, the beacon keeps announcing (every minute, on an IP change, after a resume) until the device joins another
+network (another Wi-Fi name, or another router where there is no Wi-Fi name); then it stops. If SSH is off, it starts
+it for this boot the way the CFW's own menu does, without changing any setting.
+
+**Autostart** is off by default and switched per device: on the page (the beacon list: per device, or *All on* /
+*All off*; the choice goes to the device in the signed answer to its next announce) or on the device
+(`sh devicehub/beacon autostart on|off`). It is kept in `devicehub/autostart`. On, a boot hook starts the beacon after
+every boot, but only on the network it was switched on in (`devicehub/autostart.net`: Wi-Fi name and router): Knulli/
+Batocera `custom.sh`, ROCKNIX/JELOS/AmberELEC a unit in `/storage/.config/system.d`, muOS `MUOS/init` (User Init
+Scripts on), ArkOS/dArkOS a systemd unit. spruce has no boot hook yet (`autostart=none`).
 
 If the key can't be written (some CFWs reset `.ssh`), the card says so and you enter the device's password instead
 (Edit > Password), as in normal DeviceHub.
@@ -52,10 +60,10 @@ because you ran the port since it booted. When it stops announcing, its card goe
 
 - `GET /api/beacon/hello` → `nonce=<hex>` (one use, 2 minutes).
 - `POST /api/beacon`: `key=value` lines (`v`, `nonce`, `id`, `challenge`, `name`, `cfw`, `cfw_version`, `ip`, `mac`,
-  `user`, `port`, `ssh`, `keyok`, `autostart`, `width`, `height`, `ram`, `hostkey`…), header
+  `user`, `port`, `ssh`, `keyok`, `autostart` (1/0/none), `ssid`, `width`, `height`, `ram`, `hostkey`…), header
   `X-Beacon-Sig: HMAC-SHA256(beacon key, body)`.
-- The answer: `key=value` lines (`state` = pending / approved / denied, `dev`, `msg`, `interval`, `pubkey` once
-  approved, the device's `challenge` echoed), ending with `sig=HMAC-SHA256(beacon key, everything before it)`. The
+- The answer: `key=value` lines (`state` = pending / approved / denied, `dev`, `msg`, `interval`, `pubkey` and the
+  user's `autostart` choice (1/0, if any) once approved, the device's `challenge` echoed), ending with `sig=HMAC-SHA256(beacon key, everything before it)`. The
   beacon ignores an answer that doesn't verify, so nobody on the network can hand it an SSH key to install.
 - The beacon key is in `data/beacon.key` and in every downloaded port; *Change the beacon key* makes old ports stop
   working. The device id is random, made once per SD card (`devicehub/id`).

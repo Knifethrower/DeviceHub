@@ -6,7 +6,10 @@
 set -e
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d)
-HUB=18799; DEVPORT=12299
+# free ports, and no hub of the caller's: an agent's DEVHUB_URL/TOKEN would send this test's devhub calls to its real hub
+unset DEVHUB_URL DEVHUB_TOKEN DEVHUB_SESSION
+free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+HUB=$(free_port); DEVPORT=$(free_port)
 export DEVHUB_PORT=$HUB DEVHUB_DATA=$T/data DEVHUB_NO_AUTOSTART=1 DEVHUB_PLATFORM=${1:-linux} DEVHUB_NAME=smoke-test
 PIDS=
 forget() { ssh-keygen -R "[127.0.0.1]:$DEVPORT" >/dev/null 2>&1 || true; }   # the fake device's key is new every run

@@ -887,6 +887,12 @@ document.addEventListener("click", async e => {
   const host = b.closest("[data-dev]"), dev = host && host.dataset.dev, d = S && S.devices.find(x => x.id === dev);
   const a = b.dataset.act;
   if (a === "dismiss") return act(api("POST", "/api/alerts/dismiss", { id: +b.dataset.id }), " ");
+  if (a === "bcn-autostart" || a === "bcn-autostart-all") {
+    const on = b.dataset.on === "1", path = a === "bcn-autostart" ? `/api/beacons/${b.dataset.bid}/autostart` : "/api/beacons/autostart";
+    await act(api("POST", path, { on }), `Autostart ${on ? "on" : "off"}: the device applies it on its next announce (within a minute)`);
+    if ($("#bcndlg").open) renderBeacons();
+    return;
+  }
   if (a.startsWith("bcn-")) {
     const verb = a.slice(4);
     if (verb === "forget" && !confirm("Forget this beacon? If it announces again it asks to join again (its device card stays).")) return;
@@ -1619,6 +1625,9 @@ function renderPortList() {
 const ps = $("#portsearch"); if (ps) ps.addEventListener("input", renderPortList);
 // Listen for messages from the proxied PortMaster website iframe
 window.addEventListener("message", e => {
+  // only from the wiki/website frame (any other window could post one and fill in an install)
+  const wf = $("#wikiframe");
+  if (!wf || e.source !== wf.contentWindow) return;
   if (e.data && e.data.type === "pm-download") {
     const url = e.data.url;
     const title = e.data.title || "Port";
@@ -2507,20 +2516,28 @@ function renderBeacons() {
   const rows = S.server.beacons.slice().sort((a, b) => b.last - a.last).map(b => `<tr>
       <td><b>${esc(b.name || b.id)}</b><span class="sub mono">${esc(b.id)}</span></td>
       <td>${esc(b.cfw || "?")} ${esc(b.cfw_version || "")}<span class="sub">${esc(b.ip)} · ${esc(b.user)}${b.mac ? " · " + esc(b.mac) : ""}</span></td>
-      <td>${esc(st[b.state] || b.state)}${b.dev ? `<span class="sub">card: ${esc(b.dev)}</span>` : ""}<span class="sub">${b.keyok === "1" ? "hub key installed" : b.keyok === "fail" ? "key failed: password login" : "no hub key yet"}${b.autostart === "1" ? " · autostart" : ""}</span></td>
+      <td>${esc(st[b.state] || b.state)}${b.dev ? `<span class="sub">card: ${esc(b.dev)}</span>` : ""}<span class="sub">${b.keyok === "1" ? "hub key installed" : b.keyok === "fail" ? "key failed: password login" : "no hub key yet"}</span></td>
+      <td>${b.autostart === "none" ? `<span class="sub">no boot hook on this CFW</span>` : `${b.autostart === "1" ? "on" : "off"}${
+          b.want_autostart && b.want_autostart !== b.autostart ? `<span class="sub">switching ${b.want_autostart === "1" ? "on" : "off"}…</span>` : ""}${
+          b.state === "approved" ? ` <button type="button" class="small" data-act="bcn-autostart" data-on="${b.autostart === "1" ? 0 : 1}" data-bid="${esc(b.id)}">${b.autostart === "1" ? "Switch off" : "Switch on"}</button>` : ""}`}
+        ${b.ssid ? `<span class="sub">on ${esc(b.ssid)}</span>` : ""}</td>
       <td><span class="sub">${S.now - b.last < 120 ? "just now" : mins(S.now - b.last) + " ago"}</span></td>
       <td class="opt">${b.state !== "approved" ? `<button type="button" class="small primary" data-act="bcn-approve" data-bid="${esc(b.id)}">Approve</button>` : ""}
         ${b.state === "pending" ? `<button type="button" class="small" data-act="bcn-deny" data-bid="${esc(b.id)}">Deny</button>` : ""}
         <button type="button" class="small danger" data-act="bcn-forget" data-bid="${esc(b.id)}">Forget</button></td></tr>`).join("");
-  const html = `<p><a href="/api/beacon/port.zip?autostart=1" download="devicehub.zip"><button type="button" class="primary">Download devicehub.zip</button></a></p>
+  const html = `<p><a href="/api/beacon/port.zip?autostart=0" download="devicehub.zip"><button type="button" class="primary">Download devicehub.zip</button></a></p>
     <ol class="sub" style="padding-left:18px;margin:0 0 10px">
       <li>Put <b>devicehub.zip</b> in the device's PortMaster <span class="mono">autoinstall</span> folder (or install it with PortMaster), and switch SSH on.</li>
       <li>Run <b>DeviceHub Beacon</b> from Ports.</li>
       <li>Approve it here. The device sends its name, CFW, address, screen and SSH keys itself; the hub then connects with its own key, and it shows up as a card.</li></ol>
-    <p class="sub">It also sets itself up to announce the device after every boot. <a href="/api/beacon/port.zip?autostart=0" download="devicehub.zip">Download without autostart</a> ·
+    <p class="sub">The beacon runs when you start it, and keeps running until the device joins another network. Autostart (announce after every boot,
+      only on the network it was switched on in) is per device: switch it below, or for all:
+      <button type="button" class="small" data-act="bcn-autostart-all" data-on="1">All on</button>
+      <button type="button" class="small" data-act="bcn-autostart-all" data-on="0">All off</button> ·
+      <a href="/api/beacon/port.zip?autostart=1" download="devicehub.zip">Download with autostart on</a> ·
       <a href="#" id="bcnmanual">add a device by hand</a> · <a href="#" id="bcnrotate" title="old beacon ports stop working">change the beacon key</a></p>
     <p class="sub">The port carries this hub's beacon key: keep it to your own devices. Announcing to: ${esc(S.server.public_url || location.origin)}</p>
-    ${rows ? `<div class="tablewrap"><table class="ports"><thead><tr><th>Device</th><th>CFW · address</th><th>State</th><th>Seen</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+    ${rows ? `<div class="tablewrap"><table class="ports"><thead><tr><th>Device</th><th>CFW · address</th><th>State</th><th>Autostart</th><th>Seen</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
            : `<div class="sub">No beacon has announced itself yet.</div>`}`;
   const el = $("#bcnbody"); if (el._html !== html) { el.innerHTML = html; el._html = html; }
 }

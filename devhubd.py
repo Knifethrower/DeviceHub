@@ -12,7 +12,10 @@ with openssl and a key file only this user can read (data/secret.key) on Linux.
 """
 import base64, collections, errno, hashlib, http.server, io, json, os, re, secrets, shlex, shutil, signal, socket
 import queue, struct, subprocess, sys, threading, time, traceback, urllib.parse, zipfile, zlib
-import numpy as np
+try:                                    # fast frame conversion; without it screenshots and the live view
+    import numpy as np                  # use the plain-Python fallbacks below (slower, same results)
+except Exception:
+    np = None
 from concurrent.futures import ThreadPoolExecutor
 try:                                    # JPEG for the live view is ~10x cheaper to encode than PNG
     from PIL import Image as _PILImage
@@ -29,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.8.0"     # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.9.0"     # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -109,9 +112,40 @@ CFW_PRESETS = {
     # frontend.sh is the front end's loop (the mux* menus come and go under it); it is gone after FRONTEND stop.
     "muOS": {"user": "root", "auth": "key", "ports_dir": "", "smb_share": "", "fe_proc": "frontend.sh",
              "fe_start": "(. /etc/profile >/dev/null 2>&1; . /opt/muos/script/var/func.sh; FRONTEND start) >/dev/null 2>&1 </dev/null &",
-             "fe_stop": ". /etc/profile >/dev/null 2>&1; . /opt/muos/script/var/func.sh && FRONTEND stop"},
+             # FRONTEND stop looks for the menu with `pgrep -x muxfrontend`, but the menu renames itself after its
+             # screen (muxlaunch, muxplore, ...): it was left running, one more copy (drawing) per stop/start.
+             "fe_stop": ". /etc/profile >/dev/null 2>&1; . /opt/muos/script/var/func.sh && FRONTEND stop; "
+                        "pkill -KILL -f '/opt/muos/frontend/[m]uxfrontend' 2>/dev/null; true"},
+    # spruce: principal.sh loops MainUI (and runs what MainUI picked). Stop pauses the loop and ends MainUI; start
+    # lets the loop go on, which starts MainUI again.
+    "spruce": {"user": "root", "auth": "key", "ports_dir": "/mnt/SDCARD/Roms/ports", "smb_share": "",
+               "fe_proc": "MainUI",
+               "fe_start": "for p in $(pgrep -f 'spruce/scripts/[p]rincipal.sh'); do kill -CONT $p; done; true",
+               "fe_stop": "for p in $(pgrep -f 'spruce/scripts/[p]rincipal.sh'); do kill -STOP $p; done; "
+                          "killall MainUI 2>/dev/null; true"},
     "Other": {},
 }
+
+# Earlier values of preset fields. A device keeps its own copy of its preset's fields (they can be edited), so a
+# fixed preset never reached the devices already added; at start, a field still holding one of these exact old values
+# (so nobody edited it) gets the current one. Add the old value here when you change a preset's field.
+PRESET_OLD = {
+    "muOS": {
+        "fe_proc": [""],
+        "fe_start": ["(. /etc/profile >/dev/null 2>&1; FRONTEND start) >/dev/null 2>&1 </dev/null &"],
+        "fe_stop": [". /etc/profile >/dev/null 2>&1; FRONTEND stop",
+                    ". /etc/profile >/dev/null 2>&1; . /opt/muos/script/var/func.sh && FRONTEND stop"],
+    },
+}
+
+
+def preset_upgrade(d):
+    """The fields of d (a device) that still hold an old preset value, updated in place; returns their names."""
+    old, cur = PRESET_OLD.get(d.get("cfw") or "", {}), CFW_PRESETS.get(d.get("cfw") or "", {})
+    done = [k for k, vals in old.items() if k in cur and d.get(k) in vals and d.get(k) != cur[k]]
+    for k in done:
+        d[k] = cur[k]
+    return done
 
 DEVICE_DEFAULTS = {
     "id": "", "name": "", "type": "", "cfw": "Other", "host": "", "port": 22, "user": "root",
@@ -247,6 +281,9 @@ def jpath(name):
 _log_lock = threading.Lock()
 
 
+LOG_STDERR = os.environ.get("DEVHUB_LOG_STDERR", "") not in ("", "0")
+
+
 def log(*a):
     line = time.strftime("%Y-%m-%d %H:%M:%S ") + " ".join(str(x) for x in a)
     with _log_lock:
@@ -255,8 +292,8 @@ def log(*a):
                 f.write(line + "\n")
         except OSError:
             pass
-        if sys.stderr.isatty():
-            print(line, file=sys.stderr)
+        if sys.stderr.isatty() or LOG_STDERR:      # the server image sets DEVHUB_LOG_STDERR: `docker logs` shows it
+            print(line, file=sys.stderr, flush=True)
 
 
 def load_json(name, default):
@@ -2127,6 +2164,39 @@ def png_bytes(w, h, rows, level=6):
             chunk(b"IDAT", zlib.compress(b"".join(rows), level)) + chunk(b"IEND", b""))
 
 
+_RGB565 = None
+
+
+def _rgb565_table():
+    """RGB565 value -> 3 RGB bytes, made once (the plain-Python path without numpy)."""
+    global _RGB565
+    if _RGB565 is None:
+        _RGB565 = [bytes((((v >> 11) & 31) * 255 // 31, ((v >> 5) & 63) * 255 // 63, (v & 31) * 255 // 31))
+                   for v in range(65536)]
+    return _RGB565
+
+
+def fb_to_rgb_rows(raw, w, h, stride, bpp):
+    """Framebuffer rows to a list of h RGB rows (bytes), without numpy: C-speed slicing for 32/24 bpp,
+    a lookup table for RGB565."""
+    if len(raw) < h * stride:
+        raise ValueError("short frame: %d < %d" % (len(raw), h * stride))
+    rows = []
+    if bpp in (32, 24):
+        n = bpp // 8
+        for y in range(h):
+            src = raw[y * stride:y * stride + w * n]
+            row = bytearray(w * 3)
+            row[0::3], row[1::3], row[2::3] = src[2::n], src[1::n], src[0::n]
+            rows.append(bytes(row))
+    else:
+        table = _rgb565_table()
+        for y in range(h):
+            v = memoryview(bytes(raw[y * stride:y * stride + w * 2])).cast("H")   # little-endian devices
+            rows.append(b"".join(table[x] for x in v))
+    return rows
+
+
 def fb_to_rgb(raw, w, h, stride, bpp):
     """Framebuffer rows (BGRA/BGR little-endian, or RGB565) to an (h, w, 3) uint8 RGB array.
 
@@ -2152,6 +2222,8 @@ def fb_to_rgb(raw, w, h, stride, bpp):
 def fb_to_png(raw, w, h, stride, bpp, level=6):
     """Framebuffer rows to an RGB PNG. level: 2 compresses a live frame a lot cheaper than a saved
     screenshot (screenshots keep 6)."""
+    if np is None:
+        return png_bytes(w, h, [b"\x00" + r for r in fb_to_rgb_rows(raw, w, h, stride, bpp)], level)
     px = fb_to_rgb(raw, w, h, stride, bpp)
     rows = np.zeros((h, 1 + w * 3), dtype=np.uint8)
     rows[:, 1:] = px.reshape(h, w * 3)
@@ -2163,6 +2235,10 @@ def fb_to_jpeg(raw, w, h, stride, bpp, quality=75):
     if not PIL_OK:
         return None
     buf = io.BytesIO()
+    if np is None:
+        _PILImage.frombytes("RGB", (w, h), b"".join(fb_to_rgb_rows(raw, w, h, stride, bpp))).save(
+            buf, "JPEG", quality=quality, subsampling=2, optimize=False)
+        return buf.getvalue()
     _PILImage.fromarray(fb_to_rgb(raw, w, h, stride, bpp), "RGB").save(
         buf, "JPEG", quality=quality, subsampling=2, optimize=False)
     return buf.getvalue()
@@ -2336,6 +2412,10 @@ def save_raw_shot(dev, d, raw, w, h, pitch, bpp):
 
 def rotate_cw(raw, w, h, pitch, px):
     """Turn a buffer 90 degrees clockwise: a landscape device whose panel scans out in portrait."""
+    if np is None:
+        rows = [raw[y * pitch:y * pitch + w * px] for y in range(h - 1, -1, -1)]
+        out = b"".join(r[x * px:x * px + px] for x in range(w) for r in rows)
+        return out, h, w, h * px
     arr = np.frombuffer(raw, dtype=np.uint8).reshape(h, pitch)[:, :w * px].reshape(h, w, px)
     rot = np.transpose(arr, (1, 0, 2))[:, ::-1, :].reshape(w, h * px)
     return rot.tobytes(), h, w, h * px
@@ -2514,7 +2594,10 @@ def push_file(d, local, remote, sha1, job):
 
 def push_file_via(d, local, remote, sha1, job, url):
     part = remote + ".part"
-    prep = 'P=%s; S=""; D="$(dirname "$P")"; [ "$(id -u)" = 0 ] || [ -w "$(dirname "$D")" ] || S="sudo -n"; $S mkdir -p "$D" && '
+    # sudo only when the user can't write the folder (or make it): with sudo the file is root's, and a non-root
+    # SSH user (dArkOS's ark) couldn't change its own pushed file afterwards
+    prep = ('P=%s; S=""; D="$(dirname "$P")"; [ "$(id -u)" = 0 ] || [ -w "$D" ] || '
+            '{ [ ! -e "$D" ] && [ -w "$(dirname "$D")" ]; } || S="sudo -n"; $S mkdir -p "$D" && ')
     # the command travels in the ssh command line, so stdin carries nothing but the file
     cmd = (prep + 'exec $S sh -c \'cat > "$1"\' sh "$P"') % shlex.quote(part)
     size = os.path.getsize(local)
@@ -2580,7 +2663,7 @@ def serve_one(job, up, d):
     harbourmaster's URL in job["serve_url"]. False: serving isn't possible, so the zip is copied over SSH."""
     try:
         job["serve_tok"] = serve_add(up["path"], up["name"], own=False)
-        job["serve_url"] = serve_url(job["serve_tok"], d)
+        job["serve_url"] = serve_url(job["serve_tok"], d, md5_link=True)
         return True
     except (JobError, OSError) as e:
         job_log(job, "HTTP transfer not possible (%s): copying over SSH" % e)
@@ -2638,7 +2721,7 @@ def install_job(job, d, up, refresh, took_lock, who):
             free = int(info.get("FREE") or 0)
             if free and free < need:
                 raise JobError("not enough space: about %d MB needed, %d MB free" % (need // 1024, free // 1024))
-            target_z = serve_url(up["serve"], d)
+            target_z = serve_url(up["serve"], d, md5_link=True)
             job_log(job, "harbourmaster downloads %s from DeviceHub (%s)" % (up["name"], target_z.split("/dl/")[0]))
             job["step"] = "installing (harbourmaster downloads it from DeviceHub)"
         elif H.settings.get("install_serve") and serve_one(job, up, d):   # harbourmaster fetches it itself (md5 checked)
@@ -3114,6 +3197,13 @@ def r_index(body, q):
              "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-src 'self' https:; connect-src 'self' https:"})
 
 
+# Proxied pages are someone else's: the browser runs them sandboxed, in an origin of their own, so their scripts can't
+# use the user's session or this hub's API (served from the hub's address they would have been the hub's page). Only
+# the hub's own page may frame them; the injected script still tells it about download clicks (postMessage).
+PROXY_HEADERS = {"X-Frame-Options": "", "Content-Security-Policy":
+                 "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox; frame-ancestors 'self'"}
+
+
 @route("GET", r"/proxy/wiki/(.*)", auth=False)
 def r_wiki_proxy(body, q, path):
     """Proxy for PortMaster Wiki pages, injecting a script that intercepts download clicks."""
@@ -3146,7 +3236,7 @@ def r_wiki_proxy(body, q, path):
         else:
             html += inject
         content = html.encode("utf-8")
-    return (ctype, content, {"X-Frame-Options": "", "Content-Security-Policy": "frame-ancestors *"})
+    return (ctype, content, PROXY_HEADERS)
 
 
 @route("GET", r"/proxy/pm/(.*)", auth=False)
@@ -3172,8 +3262,8 @@ def r_pm_proxy(body, q, path):
         return ("text/plain", ("Proxy error: %s" % e).encode(), {})
     if "text/html" in ctype:
         html = content.decode("utf-8", "replace")
-        # Inject script before </body>
-        inject = '''
+        # Inject script before </body> (raw: its regexes have \. in them)
+        inject = r'''
 <script>
 (function() {
   // Intercept any navigation to a download URL
@@ -3287,7 +3377,7 @@ def r_pm_proxy(body, q, path):
         else:
             html += inject
         content = html.encode("utf-8")
-    return (ctype, content, {"X-Frame-Options": "", "Content-Security-Policy": "frame-ancestors *"})
+    return (ctype, content, PROXY_HEADERS)
 
 
 @route("GET", "/sw.js", auth=False)
@@ -3780,6 +3870,9 @@ def r_frontend(body, q, dev):
 # Frames only go out when the content changed, so an idle screen costs the capture alone.
 
 STREAM_PORT_FIRST = 9876
+# The streamers run with sudo for a non-root SSH user (dArkOS's ark), so stopping them needs it too: a plain pkill
+# left them running, still sending to a port the next live view (another device's) would get
+STREAM_KILL = 'S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; for n in dhstream fbstream dhcap; do $S pkill "$n" 2>/dev/null; done; true'
 STREAMS = {}        # device id -> StreamReceiver while the view is open
 
 STREAM_PROBE_SH = r"""
@@ -3794,20 +3887,16 @@ for r in "$XDG_RUNTIME_DIR" /var/run/0-runtime-dir /run/user/$u /run/0-runtime-d
     [ -S "$s" ] && { way="$r ${s##*/}"; break; }
   done
 done
-# an explicit choice is honoured only when the device really has that route
+a=$(uname -m)
+# the Wayland client (dhstream) is built for aarch64; everything else is dhcap, which picks among the DRM planes and
+# /dev/fb0 itself (drm/fb: only that one)
 case "$want" in
-  wlr) [ -n "$way" ] && { echo "live wlr $u $way"; exit 0; } ;;
-  drm) [ -r /dev/dri/card0 ] && { echo "live drm $u"; exit 0; } ;;
-  fb)  [ -r /dev/fb0 ] && { echo "live fb $u"; exit 0; } ;;
+  wlr) [ -n "$way" ] && [ "$a" = aarch64 ] && { echo "live wlr $u $a $way"; exit 0; } ;;
+  drm|fb) echo "live $want $u $a"; exit 0 ;;
 esac
-# auto, or the chosen route is missing: the best available one
-[ -n "$way" ] && { echo "live wlr $u $way"; exit 0; }
-if command -v grim >/dev/null 2>&1 && [ -n "$way" ]; then
-  echo "live way $u $way"; exit 0
-fi
-[ -r /dev/dri/card0 ] && { echo "live drm $u"; exit 0; }
-[ -r /dev/fb0 ] && { echo "live fb $u"; exit 0; }
-echo "live none $u"
+[ -n "$way" ] && [ "$a" = aarch64 ] && { echo "live wlr $u $a $way"; exit 0; }
+if [ -e /dev/dri/card0 ] || [ -e /dev/fb0 ]; then echo "live auto $u $a"; exit 0; fi
+echo "live none $u $a"
 """
 
 
@@ -3816,9 +3905,11 @@ class StreamReceiver(threading.Thread):
     into a PNG for the web UI (server side, so the device stays light)."""
     daemon = True
 
-    def __init__(self, dev, port, fps, mode):
+    def __init__(self, dev, port, fps, mode, src=None):
         super().__init__()
         self.dev, self.port, self.fps, self.mode = dev, port, fps, mode
+        self.src = src           # the device's address: packets from anywhere else are dropped (a streamer left
+                                 # running elsewhere sends to the same port; its frames showed in another device's view)
         self.lock = threading.Lock()
         self.stop = False
         self.cfg = None          # (w, h, bpp) from the config packet
@@ -3847,8 +3938,10 @@ class StreamReceiver(threading.Thread):
         try:
             while not self.stop:
                 try:
-                    pkt, _ = s.recvfrom(65536)
+                    pkt, addr = s.recvfrom(65536)
                 except socket.timeout:
+                    continue
+                if self.src and addr[0] != self.src:
                     continue
                 try:
                     self.feed(pkt)
@@ -3894,7 +3987,10 @@ class StreamReceiver(threading.Thread):
                 prev = self.frame[1] if self.frame else None
             if prev is None or len(prev) != orig:
                 return   # no reference frame yet; wait for a keyframe
-            raw = bytes(np.frombuffer(payload, dtype=np.uint8) ^ np.frombuffer(prev, dtype=np.uint8))
+            if np is not None:
+                raw = bytes(np.frombuffer(payload, dtype=np.uint8) ^ np.frombuffer(prev, dtype=np.uint8))
+            else:
+                raw = (int.from_bytes(payload, "little") ^ int.from_bytes(prev, "little")).to_bytes(orig, "little")
         else:
             raw = payload
         with self.lock:
@@ -3966,10 +4062,24 @@ def server_ip_for(host):
     """The hub's address on the network path to the device: the src of its own route to it."""
     try:
         p = subprocess.run(["ip", "-o", "route", "get", host], capture_output=True, text=True, timeout=5)
+        m = re.search(r"src (\S+)", p.stdout)
+        if m:
+            return m.group(1)
     except (OSError, subprocess.TimeoutExpired):
+        pass                            # no `ip` (the server image): ask the kernel through a socket instead
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as t:
+            t.connect((host, 9))        # UDP: nothing is sent, the kernel just picks the route
+            return t.getsockname()[0]
+    except OSError:
         return None
-    m = re.search(r"src (\S+)", p.stdout)
-    return m.group(1) if m else None
+
+
+# Writing a helper to /tmp: sudo only when the file (or, if it isn't there yet, its folder) isn't the user's to write.
+# Deciding by the folder above made /tmp files root's for a non-root user (dArkOS's ark), which then couldn't chmod
+# them: the input helper stayed non-executable and remote input never started.
+UPLOAD_SUDO = ('P=%s; S=""; D="$(dirname "$P")"; [ "$(id -u)" = 0 ] || [ -w "$P" ] || '
+               '{ [ ! -e "$P" ] && [ -w "$D" ]; } || S="sudo -n"; ')
 
 
 def upload_streamer(d, name, remote):
@@ -3986,7 +4096,8 @@ def upload_streamer(d, name, remote):
     if rc == 0 and lines and lines[0].strip() == str(sz):
         if len(lines) < 2 or lines[1].split()[0] == want:
             return
-    rc, out, err = ssh_run(d, "cat > %s && chmod 700 %s && echo ok" % (remote, remote), inp=open(p, "rb").read(), timeout=60)
+    rc, out, err = ssh_run(d, (UPLOAD_SUDO + '$S sh -c \'cat > "$1" && chmod 755 "$1"\' sh "$P" && echo ok') % shlex.quote(remote),
+                           inp=open(p, "rb").read(), timeout=60)
     if rc != 0 or out.strip() != b"ok":
         raise ApiError(500, "streamer upload failed: %s" % err.decode("utf-8", "replace").strip()[-200:])
 
@@ -3997,9 +4108,10 @@ def stream_stop(dev, quiet=False, d=None):
         s = STREAMS.pop(dev, None)
     if s:
         s.close()
-        s.join(timeout=2)               # wait for the receiver to drop its UDP socket before a restart
+        if s.ident is not None:         # a start that failed early never started it (join() would raise)
+            s.join(timeout=2)           # wait for the receiver to drop its UDP socket before a restart
         if d:
-            ssh_run(d, "pkill dhstream 2>/dev/null; pkill fbstream 2>/dev/null; true", timeout=8)
+            ssh_run(d, STREAM_KILL, timeout=8)
         if not quiet:
             log("stream", dev, "stopped")
     return s
@@ -4020,31 +4132,36 @@ def r_live_start(body, q, dev):
     # the receiver is reserved first, so two starts can never pick the same UDP port
     with H.lock:
         port = stream_port()
-        s = StreamReceiver(dev, port, fps, "?")
+        try:
+            src = socket.gethostbyname(d["host"])
+        except OSError:
+            src = None              # can't tell: take what comes
+        s = StreamReceiver(dev, port, fps, "?", src)
         STREAMS[dev] = s
     try:
         rc, out, err = ssh_run(d, "sh -s -- %s" % shlex.quote(want), inp=STREAM_PROBE_SH.encode(), timeout=30)
         f = out.decode().split()
         if rc != 0 or len(f) < 3 or f[0] != "live":
             raise ApiError(500, "stream probe failed: %s" % err.decode("utf-8", "replace").strip()[-200:])
-        mode, uid = f[1], f[2]
+        mode, uid, arch = f[1], f[2], (f[3] if len(f) > 3 else "aarch64")
         if mode == "none":
-            raise ApiError(400, "no live capture route on the device (needs grim, /dev/dri or /dev/fb0)")
+            raise ApiError(400, "no live capture route on the device (no Wayland compositor, /dev/dri or /dev/fb0)")
         ip = server_ip_for(d["host"])
         if not ip:
             raise ApiError(500, "cannot find the hub's address on the way to the device")
-        if mode == "fb":
-            name, remote = "fbstream-aarch64", "/tmp/fbstream"
-            args = [remote, ip, str(port), str(fps)]
+        if mode in ("auto", "drm", "fb"):
+            # dhcap (static: any CFW's libc): the DRM plane or /dev/fb0 that shows the screen, picked like a
+            # screenshot is, and looked at again every few seconds
+            name = "dhcap-aarch64" if arch == "aarch64" else "dhcap-armhf"
+            if arch not in ("aarch64",) and not arch.startswith("arm"):
+                raise ApiError(400, "no live view streamer for %s devices" % arch)
+            remote = "/tmp/dhcap"
+            args = [remote, ip, str(port), str(fps), mode] + re.findall(r"\d+", d.get("screen") or "")[:2]
         else:
             name, remote = "dhstream-aarch64", "/tmp/dhstream"
-            args = [remote, ip, str(port), str(fps), mode]
-            if mode in ("way", "wlr"):
-                if len(f) < 5:
-                    raise ApiError(500, "stream probe gave no compositor socket")
-                args += [f[3], f[4]]
-            elif mode == "drm":
-                args += re.findall(r"\d+", d.get("screen") or "")[:2]
+            if len(f) < 6:
+                raise ApiError(500, "stream probe gave no compositor socket")
+            args = [remote, ip, str(port), str(fps), mode, f[4], f[5]]
         s.mode = mode
         upload_streamer(d, name, remote)
         s.start()
@@ -4056,8 +4173,7 @@ def r_live_start(body, q, dev):
             raise ApiError(500, s.err)
         pre = "" if uid == "0" else "sudo -n "
         inner = "exec %s%s 2>/tmp/.dhstream.log" % (pre, " ".join(shlex.quote(x) for x in args))
-        run = ("pkill dhstream 2>/dev/null; pkill fbstream 2>/dev/null; sleep 0.2; "
-               "nohup sh -c %s >/dev/null 2>&1 &" % shlex.quote(inner))
+        run = (STREAM_KILL + "; sleep 0.2; nohup sh -c %s >/dev/null 2>&1 &" % shlex.quote(inner))
         try:
             rc, out2, err2 = ssh_run(d, run, timeout=15)
         except subprocess.TimeoutExpired:
@@ -4070,8 +4186,13 @@ def r_live_start(body, q, dev):
         while now() < end and s.frame is None:
             time.sleep(0.3)
         if s.frame is None:
-            raise ApiError(500, "the %s route started but sent no frames after 8 s — this device may not "
-                                "support it; pick another backend in the device's settings" % mode)
+            try:
+                _, lg, _ = ssh_run(d, "tail -c 300 /tmp/.dhstream.log 2>/dev/null", timeout=10)
+                lg = lg.decode("utf-8", "replace").strip().replace("\n", "; ")
+            except (subprocess.TimeoutExpired, OSError):
+                lg = ""
+            raise ApiError(500, "the %s route started but sent no frames after 8 s%s" % (
+                mode, (": " + lg) if lg else " (pick another route in the device's settings)"))
         w, h, _ = s.cfg or (0, 0, 0)
         fell_back = want != "auto" and mode != want
         if fell_back:
@@ -4126,7 +4247,7 @@ def stop_streams_on_exit():
         STREAMS.clear()
     for dev, s in items:
         s.close()
-    kill = "pkill dhstream 2>/dev/null; pkill fbstream 2>/dev/null; true"
+    kill = STREAM_KILL
     for dev in [dev for dev, _ in items]:
         d = H.devices.get(dev)
         if d:
@@ -4586,12 +4707,16 @@ def local_ip_for(host):
         raise JobError("can't tell which of this machine's addresses %s would reach" % host)
 
 
-def serve_url(tok, d):
+def serve_url(tok, d, md5_link=False):
+    """Where the device downloads a served file. md5_link (harbourmaster installs): <name>.md5?md5=<hex>, which every
+    PortMaster checks: one that knows ?md5= downloads <name> and checks it against the link, an older one fetches the
+    .md5 file (served next to the file) and then <name>. A plain <name>?md5= went unchecked on those."""
     e = H.serves.get(tok)
     if not e:
         raise JobError("the file to send is gone (its transfer ended)")
     port = FILE_PORT if H.file_srv else PORT
-    return "http://%s:%d/dl/%s/%s?md5=%s" % (local_ip_for(d["host"]), port, tok, urllib.parse.quote(e["name"]), e["md5"])
+    return "http://%s:%d/dl/%s/%s%s?md5=%s" % (local_ip_for(d["host"]), port, tok, urllib.parse.quote(e["name"]),
+                                               ".md5" if md5_link else "", e["md5"])
 
 
 # Under WSL (NAT networking) the devices can't reach a server inside WSL: Windows Python runs winserve.py, which
@@ -4623,7 +4748,7 @@ def win_python():
 
 def win_manifest():
     with H.lock:
-        items = {t: {"path": wslpath_w(e["path"]), "name": e["name"]} for t, e in H.serves.items()}
+        items = {t: {"path": wslpath_w(e["path"]), "name": e["name"], "md5": e["md5"]} for t, e in H.serves.items()}
     tmp = jpath("serves.json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(items, f)
@@ -4653,7 +4778,11 @@ def win_server_up():
 
 def send_served(h, tok, name):
     e = H.serves.get(tok)
-    if not e or urllib.parse.unquote(name) != e["name"]:
+    name = urllib.parse.unquote(name)
+    if e and name == e["name"] + ".md5":     # what an older harbourmaster fetches for a <name>.md5 link
+        h.reply(200, "text/plain", ("%s  %s\n" % (e["md5"], e["name"])).encode())
+        return STREAMED
+    if not e or name != e["name"]:
         h.reply(404, "text/plain", b"not found")
         return STREAMED
     h.send_response(200)
@@ -5005,6 +5134,8 @@ def r_console_log(body, q, dev):
 
 # ---------------------------------------------------------------- remote input (keyboard + gamepad over a UDP port on the device)
 INPUT_HELPER = os.path.join(HERE, "helper", "dhinput-aarch64")
+# with sudo where the helper ran with it; [d]hinput so pkill -f doesn't match (and end) the shell running it
+INPUT_KILL = 'S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; $S pkill -f "/tmp/[d]hinput" 2>/dev/null; true'
 INPUT_PORT_BASE = 41000
 
 
@@ -5040,7 +5171,7 @@ def _input_teardown(dev, s):
     # make sure nothing lingers on the device (SIGHUP may not reach it)
     if d is not None:
         try:
-            ssh_run(d, "pkill -f /tmp/dhinput 2>/dev/null; true", timeout=8)
+            ssh_run(d, INPUT_KILL, timeout=8)
         except Exception:
             pass
     with H.lock:
@@ -5060,8 +5191,7 @@ def _input_upload(d):
         raise ApiError(500, "input helper binary is missing on the hub (helper/dhinput-aarch64)")
     remote = "/tmp/dhinput"
     # stream the file over the shared connection directly to its final path
-    cmd = ('P=%s; S=""; D="$(dirname "$P")"; [ "$(id -u)" = 0 ] || [ -w "$(dirname "$D")" ] || S="sudo -n"; '
-           '$S mkdir -p "$D" && exec $S sh -c \'cat > "$1"\' sh "$P"') % shlex.quote(remote)
+    cmd = (UPLOAD_SUDO + 'exec $S sh -c \'cat > "$1" && chmod 755 "$1"\' sh "$P"') % shlex.quote(remote)
     p = subprocess.Popen(ssh_args(d, cmd), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     try:
         with open(INPUT_HELPER, "rb") as f:
@@ -5077,13 +5207,13 @@ def _input_upload(d):
     if rc != 0:
         err = p.stderr.read().decode("utf-8", "replace").strip()
         raise ApiError(500, "could not upload the input helper: %s" % (err or "ssh exit %d" % rc))
-    ssh_run(d, "chmod 755 %s" % shlex.quote(remote), timeout=15)
     return remote
 
 
 @route("POST", r"/api/devices/([a-z0-9_-]+)/input/start")
 def r_input_start(body, q, dev):
     d = need_device(dev)
+    need_lock_for(dev, d, caller(body), "remote input")
     if rt(dev)["master"]["state"] != "up" and d["auth"] != "key":
         raise ApiError(503, "the shared SSH connection to %s is %s" % (dname(d), rt(dev)["master"]["state"]))
     s = _input_session(d)
@@ -5097,22 +5227,24 @@ def r_input_start(body, q, dev):
     if arch != "aarch64":
         raise ApiError(400, "input forwarding needs a 64-bit (aarch64) handheld; this one reports %s" % arch)
     # make sure uinput is available
-    rc, out, _ = ssh_run(d, "sh -s", inp=b"ls -l /dev/uinput 2>/dev/null; modprobe uinput 2>/dev/null; ls /dev/uinput 2>/dev/null",
+    rc, out, _ = ssh_run(d, "sh -s", inp=b"echo UID=$(id -u); ls -l /dev/uinput 2>/dev/null; modprobe uinput 2>/dev/null; ls /dev/uinput 2>/dev/null",
                          timeout=15)
     if b"uinput" not in (out or b""):
         raise ApiError(500, "the handheld has no /dev/uinput — input forwarding cannot start")
     # kill any stale helper from a previous crashed session
     try:
-        ssh_run(d, "pkill -f /tmp/dhinput 2>/dev/null; true", timeout=8)
+        ssh_run(d, INPUT_KILL, timeout=8)
     except Exception:
         pass
+    # /dev/uinput is root's: a non-root SSH user (dArkOS's ark) runs the helper with sudo
+    pre = "" if b"UID=0" in (out or b"") else "sudo -n "
     remote = _input_upload(d)
     # try a few ports
     last_err = ""
     for attempt in range(5):
         port = INPUT_PORT_BASE + (hash(dev) % 100) * 5 + attempt
         # avoid colliding with an already-running session on the same hub
-        cmd = "exec %s %d 900" % (remote, port)
+        cmd = "exec %s%s %d 900" % (pre, remote, port)
         p = subprocess.Popen(ssh_args(d, cmd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, bufsize=0)
         # wait for READY line (up to 20s)
@@ -5173,6 +5305,7 @@ def r_input_start(body, q, dev):
 @route("POST", r"/api/devices/([a-z0-9_-]+)/input/event")
 def r_input_event(body, q, dev):
     d = need_device(dev)
+    need_lock_for(dev, d, caller(body), "remote input")
     s = _input_session(d)
     if s is None or s.get("proc") is None or s["proc"].poll() is not None:
         if s is not None:
@@ -5181,60 +5314,27 @@ def r_input_event(body, q, dev):
     evs = body.get("ev") or []
     if not isinstance(evs, list):
         raise ApiError(400, "ev must be a list")
-    # type 5 = ping
     ping_seq = body.get("ping")
-    # build datagram
+    # datagram: b"DHIN", secret u32, count u16, then events: 1 key (code u16, value u8), 2 button (code u16,
+    # value u8), 3 axis (axis u8, value i32), 4 sync, 5 ping (seq u32)
     import struct as _st
-    payload = b"DHIN" + _st.pack("<IHH", s["secret"], len(evs) + (1 if ping_seq is not None else 0), 0)
-    # rebuild count correctly
-    n = len(evs) + (1 if ping_seq is not None else 0)
-    payload = b"DHIN" + _st.pack("<IH", s["secret"], n)
-    for e in evs:
-        if not isinstance(e, list) or not e:
-            continue
-        t = int(e[0])
-        if t == 1 and len(e) >= 3:          # key code val
-            payload += _st.pack("<BBH", 1, 0, 0)  # placeholder, redo below
-        # redo properly:
-    # (rebuild cleanly)
-    payload = b"DHIN" + _st.pack("<IH", s["secret"], n)
+    ev_bytes, cnt = bytearray(), 0
     for e in evs:
         if not isinstance(e, (list, tuple)) or len(e) < 2:
             continue
         t = int(e[0])
-        if t == 1 and len(e) >= 3:            # key: code, val
-            payload += _st.pack("<BHI", 1, int(e[1]) & 0xffff, 0)[:3] + bytes([int(e[2]) & 0xff])
-            # simpler: type(1)+code u16+val u8
-            payload = payload[:-4] + _st.pack("<BHB", 1, int(e[1]) & 0xffff, int(e[2]) & 0xff)
-        elif t == 2 and len(e) >= 3:          # button
-            payload += _st.pack("<BHB", 2, int(e[1]) & 0xffff, int(e[2]) & 0xff)
-        elif t == 3 and len(e) >= 3:          # abs: axis u8, val i32
-            payload += _st.pack("<BBi", 3, int(e[1]) & 0xff, int(e[2]))
-        elif t == 4:
-            payload += _st.pack("<B", 4)
-        else:
-            # skip
-            n -= 1
-    if ping_seq is not None:
-        payload = payload[:-2] + _st.pack("<H", n - (1 if ping_seq is None else 0)) + payload[len(payload):] if False else payload
-    # fix count field (offset 8, 2 bytes) based on actual appended events is complex; recompute by counting:
-    # Easiest: rebuild from scratch cleanly:
-    ev_bytes = bytearray()
-    cnt = 0
-    for e in evs:
-        if not isinstance(e, (list, tuple)) or len(e) < 2:
-            continue
-        t = int(e[0])
-        if t == 1 and len(e) >= 3:
-            ev_bytes += _st.pack("<BHB", 1, int(e[1]) & 0xffff, int(e[2]) & 0xff); cnt += 1
-        elif t == 2 and len(e) >= 3:
-            ev_bytes += _st.pack("<BHB", 2, int(e[1]) & 0xffff, int(e[2]) & 0xff); cnt += 1
+        if t in (1, 2) and len(e) >= 3:
+            ev_bytes += _st.pack("<BHB", t, int(e[1]) & 0xffff, int(e[2]) & 0xff)
         elif t == 3 and len(e) >= 3:
-            ev_bytes += _st.pack("<BBi", 3, int(e[1]) & 0xff, int(e[2])); cnt += 1
+            ev_bytes += _st.pack("<BBi", 3, int(e[1]) & 0xff, int(e[2]))
         elif t == 4:
-            ev_bytes += _st.pack("<B", 4); cnt += 1
+            ev_bytes += _st.pack("<B", 4)
+        else:
+            continue
+        cnt += 1
     if ping_seq is not None:
-        ev_bytes += _st.pack("<BI", 5, int(ping_seq) & 0xffffffff); cnt += 1
+        ev_bytes += _st.pack("<BI", 5, int(ping_seq) & 0xffffffff)
+        cnt += 1
     payload = b"DHIN" + _st.pack("<IH", s["secret"], cnt) + bytes(ev_bytes)
     sock = s["sock"]
     try:
@@ -5379,10 +5479,25 @@ def fps_ensure(dev):
     with H.lock:
         if st["thread"] and st["thread"].is_alive():
             return st
+        if st["error"] and now() - st.get("error_t", 0) < FPS_RETRY_S:
+            return st                       # it just failed: show why, try again a little later
         st["error"] = ""
-        st["thread"] = threading.Thread(target=fps_watch, args=(dev,), daemon=True)
+        st["thread"] = threading.Thread(target=fps_watch_logged, args=(dev,), daemon=True)
         st["thread"].start()
     return st
+
+
+FPS_RETRY_S = 15
+
+
+def fps_watch_logged(dev):
+    st = fps_state(dev)
+    try:
+        fps_watch(dev)
+    except Exception as e:                  # e.g. the monitor binary missing on the hub
+        st["error"] = "FPS monitor: %s" % e
+    if st["error"]:
+        st["error_t"] = now()
 
 
 def fps_wanted(st):
@@ -6059,6 +6174,14 @@ class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def handle_error(self, request, client_address):
+        """A browser closing a tab or reloading drops its connections: that's not an error (socketserver printed a
+        traceback for each, burying real ones). Anything else goes to the log."""
+        err = sys.exc_info()[1]
+        if isinstance(err, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)):
+            return
+        log("http error from %s:" % (client_address[0],), traceback.format_exc().rstrip())
+
 
 HTTPD = None
 
@@ -6088,12 +6211,19 @@ def main():
     load_local_presets()
     fps_finish_orphans()
     fps_kill_stale()
+    upgraded = False
     for d in load_json("devices.json", {"devices": []}).get("devices", []):
         try:
             d = clean_device(d)
             H.devices[d["id"]] = d
+            done = preset_upgrade(d)
+            if done:
+                upgraded = True
+                log("preset", d["id"], "updated from the %s preset: %s" % (d["cfw"], ", ".join(done)))
         except ApiError as e:
             log("skipping bad device", d.get("id"), e)
+    if upgraded:
+        save_devices()
     st = load_json("state.json", {})
     H.locks = st.get("locks", {})
     H.queues = st.get("queues", {})

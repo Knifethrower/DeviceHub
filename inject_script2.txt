@@ -6,7 +6,7 @@
       configurable: true,
       get: function() { return _href; },
       set: function(val) {
-        if (String(val).match(/\\.(zip|squashfs)$/i) || String(val).includes("releases/download")) {
+        if (String(val).match(/\.(zip|squashfs)$/i) || String(val).includes("releases/download")) {
           window.parent.postMessage({ type: "pm-download", url: String(val), title: document.title }, "*");
           _href = val;
           return;
@@ -20,7 +20,7 @@
   try {
     var _assign = window.location.assign.bind(window.location);
     window.location.assign = function(url) {
-      if (String(url).match(/\\.(zip|squashfs)$/i) || String(url).includes("releases/download")) {
+      if (String(url).match(/\.(zip|squashfs)$/i) || String(url).includes("releases/download")) {
         window.parent.postMessage({ type: "pm-download", url: String(url), title: document.title }, "*");
         return;
       }
@@ -31,7 +31,7 @@
   try {
     var _replace = window.location.replace.bind(window.location);
     window.location.replace = function(url) {
-      if (String(url).match(/\\.(zip|squashfs)$/i) || String(url).includes("releases/download")) {
+      if (String(url).match(/\.(zip|squashfs)$/i) || String(url).includes("releases/download")) {
         window.parent.postMessage({ type: "pm-download", url: String(url), title: document.title }, "*");
         return;
       }
@@ -42,7 +42,7 @@
   function rewriteDownloadLinks() {
     document.querySelectorAll("a[href]").forEach(function(a) {
       var href = a.getAttribute("href") || "";
-      if (href.match(/\\.(zip|squashfs)$/i) || href.includes("releases/download") || href.includes("github.com/PortsMaster")) {
+      if (href.match(/\.(zip|squashfs)$/i) || href.includes("releases/download") || href.includes("github.com/PortsMaster")) {
         if (!a.dataset.pmIntercepted) {
           a.dataset.pmIntercepted = "1";
           var origHref = href;
@@ -81,7 +81,7 @@
   document.addEventListener("submit", function(e) {
     var form = e.target;
     var action = form.getAttribute("action") || "";
-    if (action.match(/\\.(zip|squashfs)$/i) || action.includes("download")) {
+    if (action.match(/\.(zip|squashfs)$/i) || action.includes("download")) {
       e.preventDefault();
       window.parent.postMessage({ type: "pm-download", url: action, title: document.title }, "*");
     }
@@ -89,7 +89,7 @@
 
   var origOpen = window.open;
   window.open = function(url, target, features) {
-    if (String(url).match(/\\.(zip|squashfs)$/i) || String(url).includes("releases/download")) {
+    if (String(url).match(/\.(zip|squashfs)$/i) || String(url).includes("releases/download")) {
       window.parent.postMessage({ type: "pm-download", url: String(url), title: document.title }, "*");
       return null;
     }
