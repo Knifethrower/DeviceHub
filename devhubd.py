@@ -2594,7 +2594,10 @@ def push_file(d, local, remote, sha1, job):
 
 def push_file_via(d, local, remote, sha1, job, url):
     part = remote + ".part"
-    prep = 'P=%s; S=""; D="$(dirname "$P")"; [ "$(id -u)" = 0 ] || [ -w "$(dirname "$D")" ] || S="sudo -n"; $S mkdir -p "$D" && '
+    # sudo only when the user can't write the folder (or make it): with sudo the file is root's, and a non-root
+    # SSH user (dArkOS's ark) couldn't change its own pushed file afterwards
+    prep = ('P=%s; S=""; D="$(dirname "$P")"; [ "$(id -u)" = 0 ] || [ -w "$D" ] || '
+            '{ [ ! -e "$D" ] && [ -w "$(dirname "$D")" ]; } || S="sudo -n"; $S mkdir -p "$D" && ')
     # the command travels in the ssh command line, so stdin carries nothing but the file
     cmd = (prep + 'exec $S sh -c \'cat > "$1"\' sh "$P"') % shlex.quote(part)
     size = os.path.getsize(local)
@@ -3881,20 +3884,16 @@ for r in "$XDG_RUNTIME_DIR" /var/run/0-runtime-dir /run/user/$u /run/0-runtime-d
     [ -S "$s" ] && { way="$r ${s##*/}"; break; }
   done
 done
-# an explicit choice is honoured only when the device really has that route
+a=$(uname -m)
+# the Wayland client (dhstream) is built for aarch64; everything else is dhcap, which picks among the DRM planes and
+# /dev/fb0 itself (drm/fb: only that one)
 case "$want" in
-  wlr) [ -n "$way" ] && { echo "live wlr $u $way"; exit 0; } ;;
-  drm) [ -r /dev/dri/card0 ] && { echo "live drm $u"; exit 0; } ;;
-  fb)  [ -r /dev/fb0 ] && { echo "live fb $u"; exit 0; } ;;
+  wlr) [ -n "$way" ] && [ "$a" = aarch64 ] && { echo "live wlr $u $a $way"; exit 0; } ;;
+  drm|fb) echo "live $want $u $a"; exit 0 ;;
 esac
-# auto, or the chosen route is missing: the best available one
-[ -n "$way" ] && { echo "live wlr $u $way"; exit 0; }
-if command -v grim >/dev/null 2>&1 && [ -n "$way" ]; then
-  echo "live way $u $way"; exit 0
-fi
-[ -r /dev/dri/card0 ] && { echo "live drm $u"; exit 0; }
-[ -r /dev/fb0 ] && { echo "live fb $u"; exit 0; }
-echo "live none $u"
+[ -n "$way" ] && [ "$a" = aarch64 ] && { echo "live wlr $u $a $way"; exit 0; }
+if [ -e /dev/dri/card0 ] || [ -e /dev/fb0 ]; then echo "live auto $u $a"; exit 0; fi
+echo "live none $u $a"
 """
 
 
@@ -4097,7 +4096,7 @@ def stream_stop(dev, quiet=False, d=None):
         if s.ident is not None:         # a start that failed early never started it (join() would raise)
             s.join(timeout=2)           # wait for the receiver to drop its UDP socket before a restart
         if d:
-            ssh_run(d, "pkill dhstream 2>/dev/null; pkill fbstream 2>/dev/null; true", timeout=8)
+            ssh_run(d, "pkill dhstream 2>/dev/null; pkill fbstream 2>/dev/null; pkill dhcap 2>/dev/null; true", timeout=8)
         if not quiet:
             log("stream", dev, "stopped")
     return s
@@ -4125,24 +4124,25 @@ def r_live_start(body, q, dev):
         f = out.decode().split()
         if rc != 0 or len(f) < 3 or f[0] != "live":
             raise ApiError(500, "stream probe failed: %s" % err.decode("utf-8", "replace").strip()[-200:])
-        mode, uid = f[1], f[2]
+        mode, uid, arch = f[1], f[2], (f[3] if len(f) > 3 else "aarch64")
         if mode == "none":
-            raise ApiError(400, "no live capture route on the device (needs grim, /dev/dri or /dev/fb0)")
+            raise ApiError(400, "no live capture route on the device (no Wayland compositor, /dev/dri or /dev/fb0)")
         ip = server_ip_for(d["host"])
         if not ip:
             raise ApiError(500, "cannot find the hub's address on the way to the device")
-        if mode == "fb":
-            name, remote = "fbstream-aarch64", "/tmp/fbstream"
-            args = [remote, ip, str(port), str(fps)]
+        if mode in ("auto", "drm", "fb"):
+            # dhcap (static: any CFW's libc): the DRM plane or /dev/fb0 that shows the screen, picked like a
+            # screenshot is, and looked at again every few seconds
+            name = "dhcap-aarch64" if arch == "aarch64" else "dhcap-armhf"
+            if arch not in ("aarch64",) and not arch.startswith("arm"):
+                raise ApiError(400, "no live view streamer for %s devices" % arch)
+            remote = "/tmp/dhcap"
+            args = [remote, ip, str(port), str(fps), mode] + re.findall(r"\d+", d.get("screen") or "")[:2]
         else:
             name, remote = "dhstream-aarch64", "/tmp/dhstream"
-            args = [remote, ip, str(port), str(fps), mode]
-            if mode in ("way", "wlr"):
-                if len(f) < 5:
-                    raise ApiError(500, "stream probe gave no compositor socket")
-                args += [f[3], f[4]]
-            elif mode == "drm":
-                args += re.findall(r"\d+", d.get("screen") or "")[:2]
+            if len(f) < 6:
+                raise ApiError(500, "stream probe gave no compositor socket")
+            args = [remote, ip, str(port), str(fps), mode, f[4], f[5]]
         s.mode = mode
         upload_streamer(d, name, remote)
         s.start()
@@ -4154,7 +4154,7 @@ def r_live_start(body, q, dev):
             raise ApiError(500, s.err)
         pre = "" if uid == "0" else "sudo -n "
         inner = "exec %s%s 2>/tmp/.dhstream.log" % (pre, " ".join(shlex.quote(x) for x in args))
-        run = ("pkill dhstream 2>/dev/null; pkill fbstream 2>/dev/null; sleep 0.2; "
+        run = ("pkill dhstream 2>/dev/null; pkill fbstream 2>/dev/null; pkill dhcap 2>/dev/null; sleep 0.2; "
                "nohup sh -c %s >/dev/null 2>&1 &" % shlex.quote(inner))
         try:
             rc, out2, err2 = ssh_run(d, run, timeout=15)
@@ -4168,8 +4168,13 @@ def r_live_start(body, q, dev):
         while now() < end and s.frame is None:
             time.sleep(0.3)
         if s.frame is None:
-            raise ApiError(500, "the %s route started but sent no frames after 8 s — this device may not "
-                                "support it; pick another backend in the device's settings" % mode)
+            try:
+                _, lg, _ = ssh_run(d, "tail -c 300 /tmp/.dhstream.log 2>/dev/null", timeout=10)
+                lg = lg.decode("utf-8", "replace").strip().replace("\n", "; ")
+            except (subprocess.TimeoutExpired, OSError):
+                lg = ""
+            raise ApiError(500, "the %s route started but sent no frames after 8 s%s" % (
+                mode, (": " + lg) if lg else " (pick another route in the device's settings)"))
         w, h, _ = s.cfg or (0, 0, 0)
         fell_back = want != "auto" and mode != want
         if fell_back:

@@ -10,6 +10,12 @@ Releases before 1.8.0 were tagged afterwards, on the commit each one ended with;
 - Server image: starts again (numpy is optional, with plain-Python fallbacks; the image installs numpy and Pillow),
   and ships the device tools (fps/, stream/, helper/, inject_script2.txt): FPS, live view and remote input work.
 - Live view: works without `ip` (the server image); a start that fails says why instead of "internal error".
+- Live view on every device: without a Wayland compositor it's `dhcap` (static, aarch64 and armhf: no libraries on the
+  device), which picks the DRM plane or /dev/fb0 that shows the screen like screenshots do (GPU-drawn buffers through
+  their dma-buf), follows a switch, and sends RGB565 only when the picture changed. dhstream's DRM route failed on
+  AmberELEC, Knulli, spruce and dArkOS (no libwayland, an empty plane, GPU buffers), and leaked a GEM handle per
+  frame. A start that sends nothing shows the device's streamer log.
+- `devhub push` to a non-root user (dArkOS) left a root-owned file when the folder above was read-only (/tmp).
 - Beacon autostart is per device and off by default: switched on the beacon list (per device, or All on/off) and
   sent in the signed answer; on, it only starts on the network it was switched on in. A running beacon stops when
   the device joins another network. SSH off: the beacon starts it for this boot the way the CFW's menu does.
