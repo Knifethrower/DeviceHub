@@ -5126,6 +5126,8 @@ def r_console_log(body, q, dev):
 
 # ---------------------------------------------------------------- remote input (keyboard + gamepad over a UDP port on the device)
 INPUT_HELPER = os.path.join(HERE, "helper", "dhinput-aarch64")
+# with sudo where the helper ran with it; [d]hinput so pkill -f doesn't match (and end) the shell running it
+INPUT_KILL = 'S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; $S pkill -f "/tmp/[d]hinput" 2>/dev/null; true'
 INPUT_PORT_BASE = 41000
 
 
@@ -5161,7 +5163,7 @@ def _input_teardown(dev, s):
     # make sure nothing lingers on the device (SIGHUP may not reach it)
     if d is not None:
         try:
-            ssh_run(d, "pkill -f /tmp/dhinput 2>/dev/null; true", timeout=8)
+            ssh_run(d, INPUT_KILL, timeout=8)
         except Exception:
             pass
     with H.lock:
@@ -5219,22 +5221,24 @@ def r_input_start(body, q, dev):
     if arch != "aarch64":
         raise ApiError(400, "input forwarding needs a 64-bit (aarch64) handheld; this one reports %s" % arch)
     # make sure uinput is available
-    rc, out, _ = ssh_run(d, "sh -s", inp=b"ls -l /dev/uinput 2>/dev/null; modprobe uinput 2>/dev/null; ls /dev/uinput 2>/dev/null",
+    rc, out, _ = ssh_run(d, "sh -s", inp=b"echo UID=$(id -u); ls -l /dev/uinput 2>/dev/null; modprobe uinput 2>/dev/null; ls /dev/uinput 2>/dev/null",
                          timeout=15)
     if b"uinput" not in (out or b""):
         raise ApiError(500, "the handheld has no /dev/uinput — input forwarding cannot start")
     # kill any stale helper from a previous crashed session
     try:
-        ssh_run(d, "pkill -f /tmp/dhinput 2>/dev/null; true", timeout=8)
+        ssh_run(d, INPUT_KILL, timeout=8)
     except Exception:
         pass
+    # /dev/uinput is root's: a non-root SSH user (dArkOS's ark) runs the helper with sudo
+    pre = "" if b"UID=0" in (out or b"") else "sudo -n "
     remote = _input_upload(d)
     # try a few ports
     last_err = ""
     for attempt in range(5):
         port = INPUT_PORT_BASE + (hash(dev) % 100) * 5 + attempt
         # avoid colliding with an already-running session on the same hub
-        cmd = "exec %s %d 900" % (remote, port)
+        cmd = "exec %s%s %d 900" % (pre, remote, port)
         p = subprocess.Popen(ssh_args(d, cmd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, bufsize=0)
         # wait for READY line (up to 20s)
