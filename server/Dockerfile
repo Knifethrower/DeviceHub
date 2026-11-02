@@ -10,6 +10,11 @@ WORKDIR /app
 COPY devhubd.py devhubsrv.py devhub.py ./
 COPY ui ui
 COPY beacon beacon
+# what the hub copies to devices: the FPS monitor, the live-view streamers, the input helper
+COPY fps fps
+COPY stream stream
+COPY helper helper
+COPY inject_script2.txt ./
 COPY docs docs
 ENV DEVHUB_DATA=/data DEVHUB_PORT=8765 DEVHUB_BIND=0.0.0.0 PYTHONUNBUFFERED=1
 VOLUME /data

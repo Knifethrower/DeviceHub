@@ -112,7 +112,17 @@ CFW_PRESETS = {
     # frontend.sh is the front end's loop (the mux* menus come and go under it); it is gone after FRONTEND stop.
     "muOS": {"user": "root", "auth": "key", "ports_dir": "", "smb_share": "", "fe_proc": "frontend.sh",
              "fe_start": "(. /etc/profile >/dev/null 2>&1; . /opt/muos/script/var/func.sh; FRONTEND start) >/dev/null 2>&1 </dev/null &",
-             "fe_stop": ". /etc/profile >/dev/null 2>&1; . /opt/muos/script/var/func.sh && FRONTEND stop"},
+             # FRONTEND stop looks for the menu with `pgrep -x muxfrontend`, but the menu renames itself after its
+             # screen (muxlaunch, muxplore, ...): it was left running, one more copy (drawing) per stop/start.
+             "fe_stop": ". /etc/profile >/dev/null 2>&1; . /opt/muos/script/var/func.sh && FRONTEND stop; "
+                        "pkill -KILL -f '/opt/muos/frontend/[m]uxfrontend' 2>/dev/null; true"},
+    # spruce: principal.sh loops MainUI (and runs what MainUI picked). Stop pauses the loop and ends MainUI; start
+    # lets the loop go on, which starts MainUI again.
+    "spruce": {"user": "root", "auth": "key", "ports_dir": "/mnt/SDCARD/Roms/ports", "smb_share": "",
+               "fe_proc": "MainUI",
+               "fe_start": "for p in $(pgrep -f 'spruce/scripts/[p]rincipal.sh'); do kill -CONT $p; done; true",
+               "fe_stop": "for p in $(pgrep -f 'spruce/scripts/[p]rincipal.sh'); do kill -STOP $p; done; "
+                          "killall MainUI 2>/dev/null; true"},
     "Other": {},
 }
 
@@ -5133,6 +5143,7 @@ def _input_upload(d):
 @route("POST", r"/api/devices/([a-z0-9_-]+)/input/start")
 def r_input_start(body, q, dev):
     d = need_device(dev)
+    need_lock_for(dev, d, caller(body), "remote input")
     if rt(dev)["master"]["state"] != "up" and d["auth"] != "key":
         raise ApiError(503, "the shared SSH connection to %s is %s" % (dname(d), rt(dev)["master"]["state"]))
     s = _input_session(d)
@@ -5222,6 +5233,7 @@ def r_input_start(body, q, dev):
 @route("POST", r"/api/devices/([a-z0-9_-]+)/input/event")
 def r_input_event(body, q, dev):
     d = need_device(dev)
+    need_lock_for(dev, d, caller(body), "remote input")
     s = _input_session(d)
     if s is None or s.get("proc") is None or s["proc"].poll() is not None:
         if s is not None:
@@ -5428,10 +5440,25 @@ def fps_ensure(dev):
     with H.lock:
         if st["thread"] and st["thread"].is_alive():
             return st
+        if st["error"] and now() - st.get("error_t", 0) < FPS_RETRY_S:
+            return st                       # it just failed: show why, try again a little later
         st["error"] = ""
-        st["thread"] = threading.Thread(target=fps_watch, args=(dev,), daemon=True)
+        st["thread"] = threading.Thread(target=fps_watch_logged, args=(dev,), daemon=True)
         st["thread"].start()
     return st
+
+
+FPS_RETRY_S = 15
+
+
+def fps_watch_logged(dev):
+    st = fps_state(dev)
+    try:
+        fps_watch(dev)
+    except Exception as e:                  # e.g. the monitor binary missing on the hub
+        st["error"] = "FPS monitor: %s" % e
+    if st["error"]:
+        st["error_t"] = now()
 
 
 def fps_wanted(st):

@@ -607,6 +607,9 @@ def c_fps(a):
             time.sleep(1)
     except KeyboardInterrupt:
         pass
+    if last == 0:
+        print("no readings from %s" % dev, file=sys.stderr)
+        return 1
     return 0
 
 
