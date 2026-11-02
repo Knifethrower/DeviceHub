@@ -4046,10 +4046,17 @@ def server_ip_for(host):
     """The hub's address on the network path to the device: the src of its own route to it."""
     try:
         p = subprocess.run(["ip", "-o", "route", "get", host], capture_output=True, text=True, timeout=5)
+        m = re.search(r"src (\S+)", p.stdout)
+        if m:
+            return m.group(1)
     except (OSError, subprocess.TimeoutExpired):
+        pass                            # no `ip` (the server image): ask the kernel through a socket instead
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as t:
+            t.connect((host, 9))        # UDP: nothing is sent, the kernel just picks the route
+            return t.getsockname()[0]
+    except OSError:
         return None
-    m = re.search(r"src (\S+)", p.stdout)
-    return m.group(1) if m else None
 
 
 def upload_streamer(d, name, remote):
@@ -4077,7 +4084,8 @@ def stream_stop(dev, quiet=False, d=None):
         s = STREAMS.pop(dev, None)
     if s:
         s.close()
-        s.join(timeout=2)               # wait for the receiver to drop its UDP socket before a restart
+        if s.ident is not None:         # a start that failed early never started it (join() would raise)
+            s.join(timeout=2)           # wait for the receiver to drop its UDP socket before a restart
         if d:
             ssh_run(d, "pkill dhstream 2>/dev/null; pkill fbstream 2>/dev/null; true", timeout=8)
         if not quiet:
