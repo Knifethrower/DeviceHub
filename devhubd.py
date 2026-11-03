@@ -11,7 +11,7 @@ API never returns them. At rest they are encrypted: with Windows DPAPI (the Wind
 with openssl and a key file only this user can read (data/secret.key) on Linux.
 """
 import base64, collections, errno, hashlib, http.server, io, json, os, re, secrets, shlex, shutil, signal, socket
-import queue, struct, subprocess, sys, threading, time, traceback, urllib.parse, zipfile, zlib
+import posixpath, queue, struct, subprocess, sys, threading, time, traceback, urllib.parse, zipfile, zlib
 try:                                    # fast frame conversion; without it screenshots and the live view
     import numpy as np                  # use the plain-Python fallbacks below (slower, same results)
 except Exception:
@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.9.0"     # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.10.0"     # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -4447,6 +4447,8 @@ def r_agent_del(body, q, aid):
 
 def call_identity(h):
     """Identity for raw calls whose body is data: X-DevHub-Session / X-DevHub-Name headers."""
+    if h.headers.get("X-DevHub-Client") == "ui":     # the page's own uploads (Files dialog)
+        return {"client": "ui"}
     return {"client": "cli", "session": h.headers.get("X-DevHub-Session") or None,
             "name": urllib.parse.unquote(h.headers.get("X-DevHub-Name") or "")}
 
@@ -4554,9 +4556,16 @@ def r_file_put(h, q, dev):
     if n < 0:
         raise ApiError(411, "Content-Length needed")
     ident = call_identity(h)
-    ok, res = granted(dict(ident, dev=dev, ro=False, cmd="push %s (%d bytes)" % (path, n)))
-    if not ok:
-        return ("application/json", json.dumps(res).encode())
+    if ident["client"] == "ui":
+        path = fs_path(path, change=True)
+        no = fs_may_write(dev, d, caller(ident), "upload %s (%d bytes)" % (path, n), (q.get("force") or [""])[0] == "1")
+        if no:
+            return ("application/json", json.dumps(no).encode())
+        res = {}
+    else:
+        ok, res = granted(dict(ident, dev=dev, ro=False, cmd="push %s (%d bytes)" % (path, n)))
+        if not ok:
+            return ("application/json", json.dumps(res).encode())
     if H.settings.get("install_serve"):     # HTTP transfers: spool it here, then the device downloads it
         os.makedirs(UPLOADS, exist_ok=True)
         tmp, sha, got = os.path.join(UPLOADS, "push-%s" % secrets.token_hex(8)), hashlib.sha1(), 0
@@ -4573,8 +4582,13 @@ def r_file_put(h, q, dev):
                 return ("application/json", json.dumps({"ok": False, "msg": "copy to %s failed (got %d of %d bytes)"
                                                                             % (path, got, n)}).encode())
             job = {"log": []}
+            _, mode, _ = ssh_run(d, "stat -c %%a %s 2>/dev/null" % remote_q(path), timeout=20)
+            mode = mode.decode().strip()
             try:
                 push_file(d, tmp, path, sha.hexdigest(), job)
+                if re.match(r"^[0-7]{3,4}$", mode):     # best-effort; sudo when the copy came in as root's
+                    ssh_run(d, "chmod %s %s 2>/dev/null || sudo -n chmod %s %s" % (mode, remote_q(path), mode, remote_q(path)),
+                            timeout=20)
             except JobError as e:
                 return ("application/json", json.dumps({"ok": False, "msg": "copy to %s failed: %s" % (path, e)}).encode())
         finally:
@@ -4585,9 +4599,18 @@ def r_file_put(h, q, dev):
         console_append(dev, caller(ident)["name"], [["cmd", "pushed %s (%d bytes, HTTP)" % (path, n)]])
         return {"ok": True, "bytes": n, "notices": res.get("notices") or []}
     part = path + ".devhub-part"
-    p = subprocess.Popen(ssh_args(d, "cat > %s && n=$(wc -c < %s) && [ \"$n\" -eq %d ] && mv -f %s %s" % (
-        remote_q(part), remote_q(part), n, remote_q(part), remote_q(path))), stdin=subprocess.PIPE,
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    # sudo only when needed (as push_file_via): the user can't write the folder, or the file there is not its own or
+    # not writable. A file that is replaced keeps its permissions (an edited launcher stays executable) and, with sudo,
+    # its owner; both best-effort: the copy is in place by then. The command travels in the ssh command line, so
+    # stdin carries nothing but the file
+    put = ('P=%s; T=%s; N=%d; D="$(dirname "$P")"; S=""; m=""; o=""; '
+           'if [ -e "$P" ]; then m=$(stat -c %%a "$P" 2>/dev/null); o=$(stat -c %%u:%%g "$P" 2>/dev/null); fi; '
+           '[ "$(id -u)" = 0 ] || { [ -w "$D" ] && { [ ! -e "$P" ] || { [ -w "$P" ] && [ "${o%%%%:*}" = "$(id -u)" ]; }; }; } '
+           '|| S="sudo -n"; '
+           '$S sh -c \'cat > "$1"\' sh "$T" && n=$($S sh -c \'wc -c < "$1"\' sh "$T") && [ "$n" -eq "$N" ] && '
+           '$S mv -f "$T" "$P" && { [ -z "$S" ] || [ -z "$o" ] || $S chown "$o" "$P" 2>/dev/null || true; } && '
+           '{ [ -z "$m" ] || $S chmod "$m" "$P" 2>/dev/null || true; }') % (shlex.quote(path), shlex.quote(part), n)
+    p = subprocess.Popen(ssh_args(d, put), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     got = 0
     try:
         while got < n:
@@ -4602,7 +4625,7 @@ def r_file_put(h, q, dev):
     err = p.stderr.read().decode("utf-8", "replace").strip()
     rc = p.wait()
     if got != n or rc != 0:
-        ssh_run(d, "rm -f %s" % remote_q(part), timeout=20)
+        ssh_run(d, "rm -f %s 2>/dev/null || sudo -n rm -f %s" % (remote_q(part), remote_q(part)), timeout=20)
         return ("application/json", json.dumps({"ok": False, "msg": "copy to %s failed%s" % (
             path, ": " + err.splitlines()[-1][:200] if err else " (got %d of %d bytes)" % (got, n))}).encode())
     console_append(dev, caller(ident)["name"], [["cmd", "pushed %s (%d bytes)" % (path, n)]])
@@ -4619,17 +4642,21 @@ def r_file_get(h, q, dev):
     ok, res = granted(dict(call_identity(h), dev=dev, ro=True, cmd=""))
     if not ok:
         return ("application/json", json.dumps(res).encode())
-    rc, out, err = ssh_run(d, "wc -c < %s" % remote_q(path), timeout=20)
+    # a file the SSH user may not read (root's 600 on a non-root device): sudo, as for the listing and the changes
+    rd = 'P=%s; S=""; [ -r "$P" ] || S="sudo -n"; ' % shlex.quote(path)
+    rc, out, err = ssh_run(d, rd + '$S sh -c \'wc -c < "$1"\' sh "$P"', timeout=20)
     size = out.decode().strip()
     if rc != 0 or not size.isdigit():
         e = err.decode("utf-8", "replace").strip().splitlines()
         return ("application/json", json.dumps({"ok": False, "msg": "can't read %s on %s%s" % (
             path, dname(d), ": " + e[-1][:200] if e else "")}).encode())
-    p = subprocess.Popen(ssh_args(d, "cat %s" % remote_q(path)), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    p = subprocess.Popen(ssh_args(d, rd + 'exec $S cat "$P"'), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL)
     h.send_response(200)
     h.send_header("Content-Type", "application/octet-stream")
     h.send_header("Content-Length", size)
+    if (q.get("dl") or [""])[0] == "1":      # the Files dialog's Download: save under the file's own name
+        h.send_header("Content-Disposition", "attachment; filename*=UTF-8''%s" % urllib.parse.quote(posixpath.basename(path)))
     h.send_header("Cache-Control", "no-store")
     h.end_headers()
     try:
@@ -4640,6 +4667,216 @@ def r_file_get(h, q, dev):
     p.wait()
     h.close_connection = True
     return STREAMED
+
+
+# ---------------------------------------------------------------- file manager (the UI's Files dialog, devhub ls)
+# Listing is read-only and needs no lock. Changes need the lock for a session; the user (the UI) may change a device
+# nobody else holds, and one an agent holds only after confirming (force). Each command runs as the SSH user and is
+# repeated with sudo -n only when that user was refused (so files stay owned by the user who can edit them later).
+
+FS_LIST_SH = r'''
+[ -n "$P" ] || P=$HOME
+cd -- "$P" 2>/dev/null || { if [ -e "$P" ]; then echo DEVHUB-DENIED; else echo DEVHUB-NOPE; fi; exit 3; }
+echo "DEVHUB-PWD=$(pwd)"
+[ -w . ] && echo DEVHUB-W
+set --
+for f in .* *; do
+  case "$f" in .|..) continue ;; esac
+  if [ -e "$f" ] || [ -L "$f" ]; then set -- "$@" "$f"; fi
+done
+echo DEVHUB-LIST
+if [ $# -gt 0 ]; then
+  if stat -c '%f/%s/%Y/%n' -- . >/dev/null 2>&1; then
+    stat -c '%f/%s/%Y/%n' -- "$@" 2>/dev/null
+  else
+    for f; do if [ -L "$f" ]; then m=a1ff; elif [ -d "$f" ]; then m=41ed; else m=81a4; fi; echo "$m/-1/0/$f"; done
+  fi
+fi
+echo DEVHUB-LINKDIRS
+for f; do if [ -L "$f" ] && [ -d "$f" ]; then printf '%s\n' "$f"; fi; done
+echo DEVHUB-END
+'''
+
+# x CMD...: run it; refused as a non-root user -> once more with sudo -n. die MSG: stop with that message.
+FS_OP_SH = r'''
+x() {
+  err=$("$@" 2>&1 >/dev/null) && return 0
+  if [ "$(id -u)" != 0 ] && printf '%s' "$err" | grep -qiE 'denied|not permitted'; then
+    err=$(sudo -n "$@" 2>&1 >/dev/null) && return 0
+  fi
+  printf '%s\n' "$err" | tail -n 3 >&2
+  return 1
+}
+die() { echo "$*" >&2; exit 4; }
+case "$OP" in
+  mkdir)   [ -e "$P" ] && die "$P already exists"; x mkdir -- "$P" ;;
+  newfile) [ -e "$P" ] && die "$P already exists"; x touch -- "$P" ;;
+  rename)  [ -e "$P" ] || [ -L "$P" ] || die "$P is gone"
+           [ -e "$T" ] || [ -L "$T" ] && die "$T already exists"
+           x mv -- "$P" "$T" ;;
+  chmod)   x chmod "$M" -- "$P" ;;
+  rm|mv|cp)
+    [ "$OP" = rm ] || [ -d "$T" ] || die "$T is not a folder"
+    printf '%s\n' "$L" | while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      [ -e "$p" ] || [ -L "$p" ] || die "$p is gone"
+      if [ "$OP" = rm ]; then x rm -rf -- "$p" || exit 1; continue; fi
+      b=${p##*/}
+      [ "$T/$b" = "$p" ] && die "$b is already in $T"
+      if [ -e "$T/$b" ] || [ -L "$T/$b" ]; then
+        [ "$OW" = 1 ] || die "$T/$b already exists"
+        x rm -rf -- "$T/$b" || exit 1
+      fi
+      if [ "$OP" = mv ]; then x mv -- "$p" "$T/$b" || exit 1
+      else x cp -a -- "$p" "$T/$b" 2>/dev/null || x cp -R -- "$p" "$T/$b" || exit 1; fi
+    done ;;
+  *) die "unknown operation $OP" ;;
+esac
+'''
+
+FS_NOTOUCH = ("/proc", "/sys", "/dev", "/run")
+
+
+def fs_path(p, what="path", change=False):
+    """An absolute, normalised device path; change=True also refuses / , top-level folders and /proc etc."""
+    p = str(p or "")
+    if not p.startswith("/") or "\n" in p or "\0" in p:
+        raise ApiError(400, "%s must be an absolute path" % what)
+    p = posixpath.normpath(p)
+    p = "/" + p.lstrip("/")
+    if change and (p.count("/") < 2 or any(p == x or p.startswith(x + "/") for x in FS_NOTOUCH)):
+        raise ApiError(400, "DeviceHub won't change %s (a system or top-level folder)" % p)
+    return p
+
+
+def fs_may_write(dev, d, c, what, force=False):
+    """None when the caller may change files on the device now; else the answer to send ('busy': the user may confirm)."""
+    if rt(dev)["master"]["state"] != "up" and d["auth"] != "key":
+        raise ApiError(503, "the shared SSH connection to %s is %s" % (dname(d), rt(dev)["master"]["state"]))
+    with H.lock:
+        lk = H.locks.get(dev)
+        if c.get("ui"):
+            if lk and not lk["holder"].get("ui") and not force:
+                return {"ok": False, "status": "busy", "msg": busy_text(d, lk)}
+        else:
+            need_lock_for(dev, d, c, what)
+            H.dirty = True
+    event(dev, "cmd", what, c["name"])
+    console_append(dev, c["name"], [["cmd", what]])
+    return None
+
+
+def fs_list(d, path):
+    """[entries], cwd, writable: one ssh round trip (stat -c where there is one, busybox included)."""
+    script = remote_sh(FS_LIST_SH, P=path)
+    text = ""
+    for pre in ("sh -s", "sudo -n sh -s"):
+        try:
+            rc, out, err = ssh_run(d, pre, inp=script.encode(), timeout=40)
+        except subprocess.TimeoutExpired:
+            raise ApiError(504, "the device took too long to list %s" % (path or "the home folder"))
+        text = out.decode("utf-8", "replace")
+        if "DEVHUB-DENIED" not in text or d.get("user") == "root":
+            break
+    if "DEVHUB-NOPE" in text:
+        raise ApiError(404, "%s does not exist on %s" % (path, dname(d)))
+    if "DEVHUB-DENIED" in text:
+        raise ApiError(403, "%s can't open %s" % (d.get("user") or "the SSH user", path))
+    if "DEVHUB-END" not in text:
+        tail = [l for l in (text + err.decode("utf-8", "replace")).splitlines() if l.strip()]
+        raise ApiError(500, "could not list %s: %s" % (path, tail[-1][:200] if tail else "no output (exit %d)" % rc))
+    cwd, writable, entries, links, part = path, False, [], set(), None
+    for line in text.split("\n"):
+        if line.startswith("DEVHUB-PWD="):
+            cwd = line[11:] or path
+        elif line == "DEVHUB-W":
+            writable = True
+        elif line in ("DEVHUB-LIST", "DEVHUB-LINKDIRS", "DEVHUB-END"):
+            part = line
+        elif part == "DEVHUB-LIST" and line:
+            bits = line.split("/", 3)
+            if len(bits) != 4:
+                continue
+            try:
+                mode, size, mtime = int(bits[0], 16), int(bits[1]), int(bits[2])
+            except ValueError:
+                continue
+            kind = {0o040000: "d", 0o120000: "l", 0o100000: "f"}.get(mode & 0o170000, "o")
+            entries.append({"name": bits[3], "type": kind, "size": size if kind == "f" and size >= 0 else None,
+                            "mtime": mtime or None, "mode": "%04o" % (mode & 0o7777)})
+        elif part == "DEVHUB-LINKDIRS" and line:
+            links.add(line)
+    for e in entries:
+        e["dir"] = e["type"] == "d" or (e["type"] == "l" and e["name"] in links)
+    entries.sort(key=lambda e: (not e["dir"], e["name"].lower()))
+    return entries, cwd, writable
+
+
+@route("GET", r"/api/devices/([a-z0-9_-]+)/fs")
+def r_fs_list(body, q, dev):
+    """A folder on the device: ?path=/abs/path (default: the ports folder, else /)."""
+    d = need_device(dev)
+    path = (q.get("path") or [""])[0] or d.get("ports_dir") or "/"
+    path = "" if path == "~" else fs_path(path)
+    if rt(dev)["master"]["state"] != "up" and d["auth"] != "key":
+        raise ApiError(503, "the shared SSH connection to %s is %s" % (dname(d), rt(dev)["master"]["state"]))
+    entries, cwd, writable = fs_list(d, path)
+    lk = H.locks.get(dev)
+    places = [["Ports", d.get("ports_dir")], ["PortMaster", d.get("pm_dir")], ["Home", "~"], ["/tmp", "/tmp"], ["/", "/"]]
+    return {"ok": True, "path": cwd, "writable": writable, "entries": entries[:5000], "total": len(entries),
+            "places": [p for p in places if p[1]], "lock": lock_public(dev, lk) if lk else None}
+
+
+@route("POST", r"/api/devices/([a-z0-9_-]+)/fs")
+def r_fs_op(body, q, dev):
+    """op: mkdir|newfile (path), rename (path, to), chmod (path, mode), rm (paths), mv|cp (paths, to = a folder,
+    overwrite). force: the user changes a device an agent holds."""
+    d = need_device(dev)
+    c = caller(body)
+    op = str(body.get("op") or "")
+    kv = {"OP": op, "P": "", "T": "", "M": "", "L": "", "OW": "1" if body.get("overwrite") else "0"}
+    if op in ("mkdir", "newfile", "rename", "chmod"):
+        kv["P"] = fs_path(body.get("path"), change=True)
+        what = "%s %s" % (op, kv["P"])
+        if op == "rename":
+            kv["T"] = fs_path(body.get("to"), "to", change=True)
+            if posixpath.dirname(kv["T"]) != posixpath.dirname(kv["P"]):
+                raise ApiError(400, "rename keeps the folder: use move for another folder")
+            what = "rename %s -> %s" % (kv["P"], posixpath.basename(kv["T"]))
+        if op == "chmod":
+            kv["M"] = str(body.get("mode") or "")
+            if not re.match(r"^([0-7]{3,4}|[ugoa]*[-+=][rwxXst]+)$", kv["M"]):
+                raise ApiError(400, "mode must be like 755 or +x")
+            what = "chmod %s %s" % (kv["M"], kv["P"])
+    elif op in ("rm", "mv", "cp"):
+        paths = body.get("paths")
+        if not isinstance(paths, list) or not paths or len(paths) > 500:
+            raise ApiError(400, "paths: a list of 1 to 500 absolute paths")
+        paths = [fs_path(p, change=op != "cp") for p in paths]
+        kv["L"] = "\n".join(paths)
+        if op != "rm":
+            kv["T"] = fs_path(body.get("to"), "to")
+            if kv["T"] == "/" or any(kv["T"] == x or kv["T"].startswith(x + "/") for x in FS_NOTOUCH):
+                raise ApiError(400, "DeviceHub won't %s into %s" % ("move" if op == "mv" else "copy", kv["T"]))
+            if any(kv["T"] == p or kv["T"].startswith(p + "/") for p in paths):
+                raise ApiError(400, "can't %s a folder into itself" % ("move" if op == "mv" else "copy"))
+        names = paths[0] if len(paths) == 1 else "%s and %d more" % (paths[0], len(paths) - 1)
+        what = {"rm": "delete %s", "mv": "move %s to " + kv["T"], "cp": "copy %s to " + kv["T"]}[op] % names
+    else:
+        raise ApiError(400, "op must be mkdir, newfile, rename, chmod, rm, mv or cp")
+    no = fs_may_write(dev, d, c, what, bool(body.get("force")))
+    if no:
+        return with_notices(c, no)
+    try:
+        rc, out, err = ssh_run(d, "sh -s", inp=remote_sh(FS_OP_SH, **kv).encode(), timeout=900)
+    except subprocess.TimeoutExpired:
+        console_append(dev, c["name"], [["err", "timed out: " + what]])
+        return with_notices(c, {"ok": False, "msg": "%s: still running after 15 min, stopped waiting" % what})
+    msg = err.decode("utf-8", "replace").strip()
+    if rc != 0:
+        console_append(dev, c["name"], [["err", msg or "exit %d" % rc]])
+        return with_notices(c, {"ok": False, "msg": "%s failed: %s" % (what, msg.splitlines()[-1][:300] if msg else "exit %d" % rc)})
+    return with_notices(c, {"ok": True, "msg": what})
 
 
 # ---------------------------------------------------------------- serving a file to the devices (install on all)

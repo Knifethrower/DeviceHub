@@ -6,6 +6,16 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.10.0 (2026-11-03)
+- Files: a file manager on each device card. Browse folders, upload (also by dropping files), download, edit text
+  files, new folder/file, rename, permissions, copy/cut and paste, delete. Listing needs no lock; changes ask you first
+  when an agent holds the device, and sessions need the lock (`GET`/`POST /api/devices/<dev>/fs`, see docs/API.md).
+- `PUT /api/devices/<dev>/file` (`devhub push`) keeps the permissions of a file it replaces: an edited or re-pushed
+  launcher stays executable. On a non-root device (dArkOS) it uses `sudo -n` when the folder or the file isn't the
+  user's (a port PortMaster installed as root), keeping the file's owner; `GET` (`devhub pull`, Edit, Download) reads
+  a file the user can't with `sudo -n` too.
+- tests/files_smoke.sh: the file manager API against the fake device.
+
 ## 1.9.0 (2026-11-02)
 - Server image: starts again (numpy is optional, with plain-Python fallbacks; the image installs numpy and Pillow),
   and ships the device tools (fps/, stream/, helper/, inject_script2.txt): FPS, live view and remote input work.
