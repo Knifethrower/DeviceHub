@@ -4586,8 +4586,9 @@ def r_file_put(h, q, dev):
             mode = mode.decode().strip()
             try:
                 push_file(d, tmp, path, sha.hexdigest(), job)
-                if re.match(r"^[0-7]{3,4}$", mode):
-                    ssh_run(d, "chmod %s %s" % (mode, remote_q(path)), timeout=20)
+                if re.match(r"^[0-7]{3,4}$", mode):     # best-effort; sudo when the copy came in as root's
+                    ssh_run(d, "chmod %s %s 2>/dev/null || sudo -n chmod %s %s" % (mode, remote_q(path), mode, remote_q(path)),
+                            timeout=20)
             except JobError as e:
                 return ("application/json", json.dumps({"ok": False, "msg": "copy to %s failed: %s" % (path, e)}).encode())
         finally:
@@ -4598,11 +4599,18 @@ def r_file_put(h, q, dev):
         console_append(dev, caller(ident)["name"], [["cmd", "pushed %s (%d bytes, HTTP)" % (path, n)]])
         return {"ok": True, "bytes": n, "notices": res.get("notices") or []}
     part = path + ".devhub-part"
-    # a file that is replaced keeps its permissions (an edited launcher stays executable)
-    p = subprocess.Popen(ssh_args(d, "m=$(stat -c %%a %s 2>/dev/null); cat > %s && n=$(wc -c < %s) && [ \"$n\" -eq %d ] && "
-                                     "mv -f %s %s && { [ -z \"$m\" ] || chmod \"$m\" %s; }" % (
-        remote_q(path), remote_q(part), remote_q(part), n, remote_q(part), remote_q(path), remote_q(path))), stdin=subprocess.PIPE,
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    # sudo only when needed (as push_file_via): the user can't write the folder, or the file there is not its own or
+    # not writable. A file that is replaced keeps its permissions (an edited launcher stays executable) and, with sudo,
+    # its owner; both best-effort: the copy is in place by then. The command travels in the ssh command line, so
+    # stdin carries nothing but the file
+    put = ('P=%s; T=%s; N=%d; D="$(dirname "$P")"; S=""; m=""; o=""; '
+           'if [ -e "$P" ]; then m=$(stat -c %%a "$P" 2>/dev/null); o=$(stat -c %%u:%%g "$P" 2>/dev/null); fi; '
+           '[ "$(id -u)" = 0 ] || { [ -w "$D" ] && { [ ! -e "$P" ] || { [ -w "$P" ] && [ "${o%%%%:*}" = "$(id -u)" ]; }; }; } '
+           '|| S="sudo -n"; '
+           '$S sh -c \'cat > "$1"\' sh "$T" && n=$($S sh -c \'wc -c < "$1"\' sh "$T") && [ "$n" -eq "$N" ] && '
+           '$S mv -f "$T" "$P" && { [ -z "$S" ] || [ -z "$o" ] || $S chown "$o" "$P" 2>/dev/null || true; } && '
+           '{ [ -z "$m" ] || $S chmod "$m" "$P" 2>/dev/null || true; }') % (shlex.quote(path), shlex.quote(part), n)
+    p = subprocess.Popen(ssh_args(d, put), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     got = 0
     try:
         while got < n:
@@ -4617,7 +4625,7 @@ def r_file_put(h, q, dev):
     err = p.stderr.read().decode("utf-8", "replace").strip()
     rc = p.wait()
     if got != n or rc != 0:
-        ssh_run(d, "rm -f %s" % remote_q(part), timeout=20)
+        ssh_run(d, "rm -f %s 2>/dev/null || sudo -n rm -f %s" % (remote_q(part), remote_q(part)), timeout=20)
         return ("application/json", json.dumps({"ok": False, "msg": "copy to %s failed%s" % (
             path, ": " + err.splitlines()[-1][:200] if err else " (got %d of %d bytes)" % (got, n))}).encode())
     console_append(dev, caller(ident)["name"], [["cmd", "pushed %s (%d bytes)" % (path, n)]])
@@ -4634,13 +4642,15 @@ def r_file_get(h, q, dev):
     ok, res = granted(dict(call_identity(h), dev=dev, ro=True, cmd=""))
     if not ok:
         return ("application/json", json.dumps(res).encode())
-    rc, out, err = ssh_run(d, "wc -c < %s" % remote_q(path), timeout=20)
+    # a file the SSH user may not read (root's 600 on a non-root device): sudo, as for the listing and the changes
+    rd = 'P=%s; S=""; [ -r "$P" ] || S="sudo -n"; ' % shlex.quote(path)
+    rc, out, err = ssh_run(d, rd + '$S sh -c \'wc -c < "$1"\' sh "$P"', timeout=20)
     size = out.decode().strip()
     if rc != 0 or not size.isdigit():
         e = err.decode("utf-8", "replace").strip().splitlines()
         return ("application/json", json.dumps({"ok": False, "msg": "can't read %s on %s%s" % (
             path, dname(d), ": " + e[-1][:200] if e else "")}).encode())
-    p = subprocess.Popen(ssh_args(d, "cat %s" % remote_q(path)), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    p = subprocess.Popen(ssh_args(d, rd + 'exec $S cat "$P"'), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL)
     h.send_response(200)
     h.send_header("Content-Type", "application/octet-stream")

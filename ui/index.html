@@ -1580,7 +1580,7 @@ $("#portsrefresh").onclick = () => portsDev && loadPorts();
 // ------------------------------------------------------------ files (browse and change the device's files)
 // Listing needs no lock. Changes: the hub checks the lock; when a session holds the device it answers "busy" and the
 // user confirms before anything is changed (force).
-let fs = null, fsClip = null;   // fs: {dev, data, shown, sel, last, edit}; fsClip: {op: "cp"|"mv", dev, paths}
+let fs = null, fsClip = null, fsSeq = 0;   // fs: {dev, data, shown, sel, last, edit}; fsClip: {op: "cp"|"mv", dev, paths}
 const fsJoin = (dir, name) => (dir === "/" ? "" : dir) + "/" + name;
 const fsParent = p => { const i = p.lastIndexOf("/"); return i <= 0 ? "/" : p.slice(0, i); };
 const FS_TEXT = /\.(sh|txt|cfg|conf|ini|json|xml|lua|py|md|log|gptk|ya?ml|toml|csv|env|properties|js|c|h|cpp|desktop|service|list|nfo)$|^[^.]+$/i;
@@ -1604,7 +1604,9 @@ function openFiles(d) {
 async function fsLoad(path) {
   if (!fs) return;
   $("#fslist").innerHTML = `<p class="sub" style="padding:10px">Reading ${esc(path || "the ports folder")}…</p>`;
+  const me = fs, seq = ++fsSeq;   // a slower, older listing (or another device's) must not land over this one
   const j = await api("GET", `/api/devices/${fs.dev}/fs?path=${encodeURIComponent(path || "")}`);
+  if (fs !== me || seq !== fsSeq) return;
   if (j.ok === false) {
     $("#fslist").innerHTML = `<div class="msgs" style="padding:0 8px"><div class="e">${esc(j.error || j.msg || "failed")}</div></div>`;
     if (fs.data) $("#fslist").insertAdjacentHTML("beforeend", `<p style="padding:0 8px"><button type="button" class="small" id="fsback">Back to ${esc(fs.data.path)}</button></p>`);

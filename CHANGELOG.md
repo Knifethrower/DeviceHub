@@ -11,7 +11,15 @@ Releases before 1.8.0 were tagged afterwards, on the commit each one ended with;
   files, new folder/file, rename, permissions, copy/cut and paste, delete. Listing needs no lock; changes ask you first
   when an agent holds the device, and sessions need the lock (`GET`/`POST /api/devices/<dev>/fs`, see docs/API.md).
 - `PUT /api/devices/<dev>/file` (`devhub push`) keeps the permissions of a file it replaces: an edited or re-pushed
-  launcher stays executable.
+  launcher stays executable. On a non-root device (dArkOS) it uses `sudo -n` when the folder or the file isn't the
+  user's (a port PortMaster installed as root), keeping the file's owner; `GET` (`devhub pull`, Edit, Download) reads
+  a file the user can't with `sudo -n` too.
+- `devhub input DEV TOKEN...`: presses buttons on the device's virtual gamepad (`a b x y l1 r1 l2 r2 l3 r3 select
+  start guide`, D-pad `up down left right`) or keys (`key:enter`, `key:esc`, `key:a` ...); a number waits that many
+  seconds. `open` starts the session (before launching a game that only looks for controllers at start), `close`
+  ends it. Wraps `POST /api/devices/<dev>/input/{start,event,stop}`; needs the lock.
+- Input: the D-pad works. The on-screen pads and a forwarded PC controller sent it as axes 6/7, which the virtual
+  gamepad doesn't have; it is the hat (ABS_HAT0X/Y, 16/17).
 - tests/files_smoke.sh: the file manager API against the fake device.
 
 ## 1.9.0 (2026-11-02)
