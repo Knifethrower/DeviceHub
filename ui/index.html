@@ -173,6 +173,25 @@ fieldset legend { font-weight: 600; font-size: 13px; padding: 0; margin-bottom: 
   border: 2px dashed var(--line); border-radius: 12px; background: var(--panel2); cursor: pointer; text-align: center; }
 .drop.over { border-color: var(--accent); background: var(--accent-soft); }
 .drop input { display: none; }
+#fsdlg { width: min(900px, calc(100vw - 32px)); }
+#fsdlg .fsbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+#fsdlg .fsbar input[type=text] { flex: 1 1 260px; min-width: 0; padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel2); font-family: var(--mono); font-size: 12.5px; }
+#fsdlg .fsbar input[type=search] { width: 130px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel2); }
+#fsdlg .fsbar input[type=file] { display: none; }
+#fslist { min-height: 160px; max-height: 55vh; overflow: auto; border: 1px solid var(--line); border-radius: 9px; }
+#fslist.over { border-color: var(--accent); background: var(--accent-soft); }
+#fslist table { width: 100%; border-collapse: collapse; font-size: 13px; }
+#fslist th { text-align: left; font-size: 11.5px; color: var(--muted); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }
+#fslist td { padding: 3px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; vertical-align: middle; }
+@media (max-width: 600px) { #fslist th:nth-child(3), #fslist td:nth-child(3) { display: none; } }
+#fslist td.n { white-space: normal; overflow-wrap: anywhere; width: 100%; }
+#fslist td.r { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+#fslist tr.sel td { background: var(--accent-soft); }
+#fslist tr[data-i] { cursor: default; user-select: none; }
+#fslist a.d { color: var(--accent); text-decoration: none; cursor: pointer; font-weight: 600; }
+#fslist .ic { display: inline-block; width: 1.4em; color: var(--faint); }
+#fsedit { display: none; }
+#fsedit textarea { width: 100%; height: 55vh; font-family: var(--mono); font-size: 12.5px; padding: 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel2); resize: vertical; tab-size: 4; white-space: pre; }
 .kv { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 4px 10px; font-size: 13px; margin: 6px 0; }
 .kv .k { color: var(--muted); }
 .msgs { margin: 8px 0; font-size: 13px; }
@@ -470,6 +489,47 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
   </div>
 </dialog>
 
+<dialog id="fsdlg"><form method="dialog" onsubmit="return false">
+  <div class="dh"><h2 id="fstitle">Files</h2><span class="spacer"></span>
+    <span class="sub" id="fslock"></span><button type="button" class="small" data-close>Close</button></div>
+  <div class="db">
+    <div id="fsbrowse">
+      <div class="fsbar">
+        <select class="slim" id="fsplaces" title="go to a folder"></select>
+        <button type="button" class="small" id="fsup" title="parent folder">↑ Up</button>
+        <input type="text" id="fspath" spellcheck="false" autocomplete="off" title="type a folder and press Enter">
+        <button type="button" class="small" id="fsreload" title="read the folder again">↻</button>
+        <input type="search" id="fsfilter" placeholder="Filter">
+      </div>
+      <div class="fsbar">
+        <button type="button" class="small" id="fsmkdir">New folder</button>
+        <button type="button" class="small" id="fsnew">New file</button>
+        <label class="small" style="margin:0"><button type="button" class="small" id="fsupbtn">Upload…</button><input type="file" id="fsupfile" multiple></label>
+        <span class="spacer" style="flex:1"></span>
+        <span class="sub" id="fsselinfo"></span>
+        <button type="button" class="small" data-fs="dl">Download</button>
+        <button type="button" class="small" data-fs="edit">Edit</button>
+        <button type="button" class="small" data-fs="rename">Rename</button>
+        <button type="button" class="small" data-fs="chmod" title="permissions, e.g. 755 or +x">Permissions</button>
+        <button type="button" class="small" data-fs="copy" title="copy, then Paste in another folder">Copy</button>
+        <button type="button" class="small" data-fs="cut" title="cut, then Paste in another folder to move">Cut</button>
+        <button type="button" class="small" id="fspaste" style="display:none">Paste</button>
+        <button type="button" class="small danger" data-fs="rm">Delete</button>
+      </div>
+      <div id="fsmsg"></div>
+      <div id="fslist"></div>
+      <div class="sub" style="margin-top:6px">Click to select, Ctrl/Shift-click for more; double-click opens a folder or edits a text file. Drop files on the list to upload them here.</div>
+    </div>
+    <div id="fsedit">
+      <div class="fsbar"><b class="mono" id="fsedpath" style="flex:1;overflow-wrap:anywhere"></b>
+        <span class="sub" id="fsedinfo"></span>
+        <button type="button" class="small" id="fsedcancel">Back</button>
+        <button type="button" class="small primary" id="fsedsave">Save</button></div>
+      <textarea id="fsedtext" spellcheck="false"></textarea>
+    </div>
+  </div>
+</form></dialog>
+
 <div id="snack"></div>
 
 <script>
@@ -602,6 +662,7 @@ function card(d) {
       ${d.fe_start ? `<button class="small" data-act="fe" data-x="restart" ${up ? "" : "disabled"}>Restart front end</button>` : ""}
       <button class="small" data-act="install" ${up && !(d.job && d.job.state === "running") ? "" : "disabled"}>Install port…</button>
       <button class="small" data-act="ports" ${up ? "" : "disabled"}>Installed ports</button>
+      <button class="small" data-act="files" ${up ? "" : "disabled"} title="browse, upload, download, edit, move and delete files on the device">Files</button>
       <button class="small" data-act="console" ${up ? "" : "disabled"} title="watch what the device and sessions print, for things that show nothing on screen">Console</button>
       <button class="small" data-act="shot" ${up ? "" : "disabled"}>Screenshot</button>
       <button class="small" data-act="live" ${up ? "" : "disabled"} title="watch this screen in the streamer: it sends only the frames that changed, so an idle menu costs almost nothing">Live screen</button>
@@ -947,6 +1008,7 @@ document.addEventListener("click", async e => {
     case "fps": return openFps(d);
     case "install": return openInstall(d);
     case "ports": return openPorts(d);
+    case "files": return openFiles(d);
     case "console": return openConsole(d);
     case "take": {
       const purpose = prompt(`What are you using ${d.name} for?`, "my own testing");
@@ -1514,6 +1576,276 @@ $("#portsbody").addEventListener("click", e => { const b = e.target.closest("but
 $("#portsbody").addEventListener("change", e => { const s = e.target.closest("select[data-logsel]"); if (s && s.value) { openPortLog(s.value); s.value = ""; } });
 $("#portsfilter").addEventListener("input", renderPorts);
 $("#portsrefresh").onclick = () => portsDev && loadPorts();
+
+// ------------------------------------------------------------ files (browse and change the device's files)
+// Listing needs no lock. Changes: the hub checks the lock; when a session holds the device it answers "busy" and the
+// user confirms before anything is changed (force).
+let fs = null, fsClip = null;   // fs: {dev, data, shown, sel, last, edit}; fsClip: {op: "cp"|"mv", dev, paths}
+const fsJoin = (dir, name) => (dir === "/" ? "" : dir) + "/" + name;
+const fsParent = p => { const i = p.lastIndexOf("/"); return i <= 0 ? "/" : p.slice(0, i); };
+const FS_TEXT = /\.(sh|txt|cfg|conf|ini|json|xml|lua|py|md|log|gptk|ya?ml|toml|csv|env|properties|js|c|h|cpp|desktop|service|list|nfo)$|^[^.]+$/i;
+function fsSize(e) {
+  const b = e.size;
+  if (b == null || b < 0) return "";
+  return b < 1024 ? b + " B" : b < 1048576 ? (b / 1024).toFixed(b < 10240 ? 1 : 0) + " KB"
+    : b < 1073741824 ? (b / 1048576).toFixed(1) + " MB" : (b / 1073741824).toFixed(2) + " GB";
+}
+const fsTime = t => t ? new Date(t * 1000).toLocaleString([], { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+const fsSelected = () => fs && fs.data ? fs.data.entries.filter(e => fs.sel.has(e.name)) : [];
+
+function openFiles(d) {
+  fs = { dev: d.id, name: d.name, data: null, shown: [], sel: new Set(), last: null, edit: null };
+  $("#fstitle").textContent = `Files on ${d.name}`;
+  $("#fsfilter").value = ""; $("#fsmsg").innerHTML = ""; $("#fslock").textContent = "";
+  fsShowEditor(false);
+  $("#fsdlg").showModal();
+  fsLoad(store("devhub.fs." + d.id) || "");
+}
+async function fsLoad(path) {
+  if (!fs) return;
+  $("#fslist").innerHTML = `<p class="sub" style="padding:10px">Reading ${esc(path || "the ports folder")}…</p>`;
+  const j = await api("GET", `/api/devices/${fs.dev}/fs?path=${encodeURIComponent(path || "")}`);
+  if (j.ok === false) {
+    $("#fslist").innerHTML = `<div class="msgs" style="padding:0 8px"><div class="e">${esc(j.error || j.msg || "failed")}</div></div>`;
+    if (fs.data) $("#fslist").insertAdjacentHTML("beforeend", `<p style="padding:0 8px"><button type="button" class="small" id="fsback">Back to ${esc(fs.data.path)}</button></p>`);
+    else if (path) $("#fslist").insertAdjacentHTML("beforeend", `<p style="padding:0 8px"><button type="button" class="small" id="fsback">Open the ports folder</button></p>`);
+    const bk = $("#fsback"); if (bk) bk.onclick = () => fsLoad(fs.data ? fs.data.path : "");
+    return;
+  }
+  if (!fs.data || fs.data.path !== j.path) { fs.sel.clear(); fs.last = null; $("#fslist").scrollTop = 0; }
+  fs.data = j;
+  store("devhub.fs." + fs.dev, j.path);
+  const lk = j.lock;
+  $("#fslock").textContent = lk && !lk.holder.ui ? `${lk.holder.name} holds it: changes ask you first` : "";
+  fsRender();
+}
+function fsRender() {
+  const j = fs.data; if (!j) return;
+  $("#fspath").value = j.path;
+  $("#fsplaces").innerHTML = `<option value="">Go to…</option>` + j.places.map(([n, p]) =>
+    `<option value="${esc(p)}">${esc(n)}${p !== n && p !== "~" ? " · " + esc(p) : ""}</option>`).join("");
+  const f = $("#fsfilter").value.trim().toLowerCase();
+  fs.shown = j.entries.filter(e => !f || e.name.toLowerCase().includes(f));
+  for (const n of [...fs.sel]) if (!j.entries.some(e => e.name === n)) fs.sel.delete(n);
+  const rows = fs.shown.map((e, i) => `<tr data-i="${i}"${fs.sel.has(e.name) ? ' class="sel"' : ""}>
+      <td class="n"><span class="ic">${e.dir ? "▸" : e.type === "l" ? "↪" : ""}</span>${e.dir ? `<a class="d" data-open="${i}">${esc(e.name)}</a>` : esc(e.name)}${e.type === "l" ? ` <span class="sub" style="display:inline">link</span>` : ""}</td>
+      <td class="r">${fsSize(e)}</td><td class="r">${fsTime(e.mtime)}</td><td class="r mono">${esc(e.mode.replace(/^0(?=\d{3}$)/, ""))}</td></tr>`).join("");
+  $("#fslist").innerHTML = `<table><thead><tr><th>Name</th><th style="text-align:right">Size</th><th style="text-align:right">Modified</th><th style="text-align:right">Mode</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="4" class="sub" style="padding:14px">${f ? "Nothing matches the filter." : "Empty folder."}</td></tr>`}</tbody></table>
+    ${j.total > j.entries.length ? `<p class="sub" style="padding:6px">Showing the first ${j.entries.length} of ${j.total} entries.</p>` : ""}`;
+  fsButtons();
+}
+function fsMark() {
+  document.querySelectorAll("#fslist tr[data-i]").forEach(tr => tr.classList.toggle("sel", fs.sel.has(fs.shown[+tr.dataset.i].name)));
+  fsButtons();
+}
+function fsButtons() {
+  const s = fsSelected(), one = s.length === 1 ? s[0] : null;
+  const en = { dl: one && !one.dir, edit: one && !one.dir, rename: !!one, chmod: !!one, copy: s.length > 0, cut: s.length > 0, rm: s.length > 0 };
+  document.querySelectorAll("#fsdlg [data-fs]").forEach(b => { b.disabled = !en[b.dataset.fs]; });
+  $("#fsselinfo").textContent = s.length > 1 ? `${s.length} selected` : "";
+  const p = $("#fspaste");
+  p.style.display = fsClip && fsClip.dev === fs.dev ? "" : "none";
+  if (fsClip) p.textContent = `Paste ${fsClip.paths.length === 1 ? fsClip.paths[0].split("/").pop() : fsClip.paths.length + " items"} (${fsClip.op === "mv" ? "move" : "copy"})`;
+  $("#fsup").disabled = !fs.data || fs.data.path === "/";
+}
+async function fsOp(body, okText) {
+  let j = await api("POST", `/api/devices/${fs.dev}/fs`, body);
+  if (j.status === "busy") {
+    if (!confirm(`${j.msg}.\n\nChange its files anyway?`)) return j;
+    j = await api("POST", `/api/devices/${fs.dev}/fs`, Object.assign({}, body, { force: true }));
+  }
+  if (j.ok === false) snack(j.error || j.msg || "failed", true); else snack(okText || j.msg || "done");
+  return j;
+}
+function fsPut(path, data, force, onprog) {
+  return new Promise(done => {
+    const x = new XMLHttpRequest();
+    x.open("PUT", `/api/devices/${fs.dev}/file?path=${encodeURIComponent(path)}${force ? "&force=1" : ""}`);
+    x.setRequestHeader("X-DevHub-Token", TOKEN);
+    x.setRequestHeader("X-DevHub-Client", "ui");
+    if (onprog) x.upload.onprogress = e => { if (e.lengthComputable) onprog(e.loaded / e.total); };
+    x.onload = () => {
+      let j; try { j = JSON.parse(x.responseText); } catch (e) { j = { ok: false, error: x.status + " " + x.statusText }; }
+      if (x.status >= 400 && j.ok !== false) j.ok = false;
+      done(j);
+    };
+    x.onerror = () => done({ ok: false, error: "the connection to DeviceHub broke off" });
+    x.send(data);
+  });
+}
+async function fsPutAsk(path, data, onprog) {   // with the "an agent holds it" question
+  let j = await fsPut(path, data, false, onprog);
+  if (j.status === "busy") {
+    if (!confirm(`${j.msg}.\n\nChange its files anyway?`)) return { ok: false, cancelled: true };
+    j = await fsPut(path, data, true, onprog);
+  }
+  return j;
+}
+function fsName(what, def) {
+  const n = prompt(what, def || "");
+  if (n === null || !n.trim()) return null;
+  if (n.includes("/") || n === "." || n === "..") { snack("a name, without /", true); return null; }
+  return n.trim();
+}
+async function fsUpload(files) {
+  if (!fs || !fs.data || !files.length) return;
+  const dir = fs.data.path, have = new Set(fs.data.entries.map(e => e.name));
+  const clash = files.filter(f => have.has(f.name));
+  if (clash.length && !confirm(`Replace ${clash.map(f => f.name).join(", ")} in ${dir}?`)) return;
+  if (clash.some(f => fs.data.entries.find(e => e.name === f.name).dir)) { snack("a folder of that name is in the way", true); return; }
+  let n = 0;
+  for (const f of files) {
+    const show = p => { $("#fsmsg").innerHTML = `<div class="job">Uploading ${esc(f.name)} (${fmtMB(f.size)})${files.length > 1 ? ` · ${n + 1} of ${files.length}` : ""}<div class="bar"><i style="width:${Math.round(p * 100)}%"></i></div></div>`; };
+    show(0);
+    const j = await fsPutAsk(fsJoin(dir, f.name), f, show);
+    if (j.ok === false) { if (!j.cancelled) snack(`${f.name}: ${j.error || j.msg || "failed"}`, true); break; }
+    n++;
+  }
+  $("#fsmsg").innerHTML = "";
+  if (n) snack(`uploaded ${n} file${n > 1 ? "s" : ""} to ${dir}`);
+  fsLoad(dir);
+}
+function fsDownload(e) {
+  const a = document.createElement("a");
+  a.href = `/api/devices/${fs.dev}/file?path=${encodeURIComponent(fsJoin(fs.data.path, e.name))}&dl=1&t=${TOKEN}`;
+  a.download = e.name;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function fsShowEditor(on) {
+  $("#fsbrowse").style.display = on ? "none" : "";
+  $("#fsedit").style.display = on ? "block" : "none";
+  if (!on && fs) fs.edit = null;
+}
+const fsDirty = () => fs && fs.edit && $("#fsedtext").value !== fs.edit.orig;
+async function fsEdit(e) {
+  if (e.size > 2 * 1048576) { snack(`${e.name} is over 2 MB: download it instead`, true); return; }
+  const path = fsJoin(fs.data.path, e.name);
+  const r = await fetch(`/api/devices/${fs.dev}/file?path=${encodeURIComponent(path)}`, { headers: { "X-DevHub-Token": TOKEN } });
+  if (!r.ok || (r.headers.get("Content-Type") || "").startsWith("application/json")) {
+    let j = {}; try { j = await r.json(); } catch (x) { }
+    snack(j.msg || j.error || `can't read ${e.name}`, true); return;
+  }
+  const buf = new Uint8Array(await r.arrayBuffer());
+  if (buf.includes(0) && !confirm(`${e.name} looks like a binary file. Edit it as text anyway?`)) return;
+  let text;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(buf); }
+  catch (x) { if (!confirm(`${e.name} is not UTF-8 text: characters that don't decode are replaced when you save. Edit anyway?`)) return; text = new TextDecoder("utf-8").decode(buf); }
+  const crlf = text.includes("\r\n");
+  text = text.replace(/\r\n/g, "\n");
+  fs.edit = { path, orig: text };
+  $("#fsedpath").textContent = path;
+  $("#fsedinfo").textContent = (crlf ? "Windows (CRLF) line endings: saving writes LF. " : "") + fsSize({ size: buf.length });
+  $("#fsedtext").value = text;
+  fsShowEditor(true);
+  $("#fsedtext").focus();
+}
+async function fsSave() {
+  if (!fs || !fs.edit) return;
+  const text = $("#fsedtext").value, b = $("#fsedsave");
+  b.disabled = true;
+  try {
+    const j = await fsPutAsk(fs.edit.path, new Blob([text]));
+    if (j.ok === false) { if (!j.cancelled) snack(j.error || j.msg || "save failed", true); return; }
+    fs.edit.orig = text;
+    snack(`saved ${fs.edit.path}`);
+  } finally { b.disabled = false; }
+}
+function fsLeaveEditor() {
+  if (fsDirty() && !confirm("Discard your changes?")) return false;
+  fsShowEditor(false); fsLoad(fs.data ? fs.data.path : "");
+  return true;
+}
+async function fsAction(k) {
+  const s = fsSelected(), one = s[0], dir = fs.data.path;
+  if (k === "dl") return fsDownload(one);
+  if (k === "edit") return fsEdit(one);
+  if (k === "rename") {
+    const n = fsName(`New name for ${one.name}`, one.name);
+    if (!n || n === one.name) return;
+    if ((await fsOp({ op: "rename", path: fsJoin(dir, one.name), to: fsJoin(dir, n) }, `renamed to ${n}`)).ok !== false) { fs.sel = new Set([n]); fsLoad(dir); }
+    return;
+  }
+  if (k === "chmod") {
+    const m = prompt(`Permissions for ${one.name}: an octal mode (755, 644) or a change like +x`, one.mode.replace(/^0(?=\d{3}$)/, ""));
+    if (m === null || !m.trim()) return;
+    if ((await fsOp({ op: "chmod", path: fsJoin(dir, one.name), mode: m.trim() }, `${one.name}: ${m.trim()}`)).ok !== false) fsLoad(dir);
+    return;
+  }
+  if (k === "copy" || k === "cut") {
+    fsClip = { op: k === "cut" ? "mv" : "cp", dev: fs.dev, paths: s.map(e => fsJoin(dir, e.name)) };
+    snack(`${s.length === 1 ? one.name : s.length + " items"}: open the folder to ${k === "cut" ? "move" : "copy"} to, then Paste`);
+    return fsButtons();
+  }
+  if (k === "rm") {
+    const list = s.map(e => e.name + (e.dir ? "/" : ""));
+    if (!confirm(`Delete from ${dir}:\n\n${list.slice(0, 15).join("\n")}${list.length > 15 ? `\n… and ${list.length - 15} more` : ""}\n\nFolders are deleted with everything in them. This can't be undone.`)) return;
+    if ((await fsOp({ op: "rm", paths: s.map(e => fsJoin(dir, e.name)) }, `deleted ${list.length === 1 ? list[0] : list.length + " items"}`)).ok !== false) fsLoad(dir);
+  }
+}
+document.querySelectorAll("#fsdlg [data-fs]").forEach(b => { b.onclick = () => fsAction(b.dataset.fs); });
+$("#fspaste").onclick = async () => {
+  if (!fsClip) return;
+  const dir = fs.data.path, have = new Set(fs.data.entries.map(e => e.name));
+  const clash = fsClip.paths.map(p => p.split("/").pop()).filter(n => have.has(n));
+  if (fsClip.paths.every(p => fsParent(p) === dir)) { snack(`already in ${dir}: open another folder first`, true); return; }
+  if (clash.length && !confirm(`Replace ${clash.join(", ")} in ${dir}?`)) return;
+  const verb = fsClip.op === "mv" ? "moved" : "copied";
+  const j = await fsOp({ op: fsClip.op, paths: fsClip.paths, to: dir, overwrite: clash.length > 0 },
+    `${verb} ${fsClip.paths.length === 1 ? fsClip.paths[0].split("/").pop() : fsClip.paths.length + " items"} to ${dir}`);
+  if (j.ok !== false && fsClip.op === "mv") fsClip = null;
+  fsLoad(dir);
+};
+$("#fsmkdir").onclick = async () => {
+  const n = fsName(`New folder in ${fs.data.path}`); if (!n) return;
+  if ((await fsOp({ op: "mkdir", path: fsJoin(fs.data.path, n) }, `made ${n}`)).ok !== false) fsLoad(fsJoin(fs.data.path, n));
+};
+$("#fsnew").onclick = async () => {
+  const n = fsName(`New file in ${fs.data.path}`); if (!n) return;
+  if ((await fsOp({ op: "newfile", path: fsJoin(fs.data.path, n) }, `made ${n}`)).ok !== false) fsEdit({ name: n, size: 0 });
+};
+$("#fsupbtn").onclick = () => $("#fsupfile").click();
+$("#fsupfile").onchange = () => { const f = [...$("#fsupfile").files]; $("#fsupfile").value = ""; fsUpload(f); };
+$("#fsup").onclick = () => fs.data && fsLoad(fsParent(fs.data.path));
+$("#fsreload").onclick = () => fsLoad(fs.data ? fs.data.path : "");
+$("#fsplaces").onchange = () => { const p = $("#fsplaces").value; $("#fsplaces").value = ""; if (p) fsLoad(p); };
+$("#fspath").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); fsLoad($("#fspath").value.trim()); } });
+$("#fsfilter").addEventListener("input", () => fsRender());
+$("#fslist").addEventListener("click", e => {
+  const a = e.target.closest("a[data-open]");
+  if (a) { fsLoad(fsJoin(fs.data.path, fs.shown[+a.dataset.open].name)); return; }
+  const tr = e.target.closest("tr[data-i]"); if (!tr) return;
+  const i = +tr.dataset.i, name = fs.shown[i].name;
+  if (e.shiftKey && fs.last != null) {
+    if (!(e.ctrlKey || e.metaKey)) fs.sel.clear();
+    for (let k = Math.min(fs.last, i); k <= Math.max(fs.last, i); k++) fs.sel.add(fs.shown[k].name);
+  } else if (e.ctrlKey || e.metaKey) { if (fs.sel.has(name)) fs.sel.delete(name); else fs.sel.add(name); fs.last = i; }
+  else { fs.sel = new Set([name]); fs.last = i; }
+  fsMark();
+});
+$("#fslist").addEventListener("dblclick", e => {
+  const tr = e.target.closest("tr[data-i]"); if (!tr || e.target.closest("a[data-open]")) return;
+  const x = fs.shown[+tr.dataset.i];
+  if (x.dir) fsLoad(fsJoin(fs.data.path, x.name));
+  else if (FS_TEXT.test(x.name) && (x.size == null || x.size <= 2 * 1048576)) fsEdit(x);
+  else fsDownload(x);
+});
+$("#fslist").addEventListener("dragover", e => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); $("#fslist").classList.add("over"); } });
+$("#fslist").addEventListener("dragleave", () => $("#fslist").classList.remove("over"));
+$("#fslist").addEventListener("drop", e => { e.preventDefault(); $("#fslist").classList.remove("over"); fsUpload([...e.dataTransfer.files]); });
+$("#fsdlg").addEventListener("keydown", e => {
+  if (!fs || fs.edit || e.target.closest("input, textarea, select")) return;
+  if (e.key === "Delete" && fs.sel.size) { e.preventDefault(); fsAction("rm"); }
+  else if (e.key === "F2" && fs.sel.size === 1) { e.preventDefault(); fsAction("rename"); }
+  else if (e.key === "Backspace" && fs.data) { e.preventDefault(); fsLoad(fsParent(fs.data.path)); }
+});
+$("#fsedtext").addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); fsSave(); } });
+$("#fsedsave").onclick = fsSave;
+$("#fsedcancel").onclick = fsLeaveEditor;
+// closing with unsaved edits: ask first (the Close button and Esc)
+$("#fsdlg").querySelector("[data-close]").addEventListener("click", e => { if (fsDirty() && !confirm("Discard your changes?")) e.stopPropagation(); });
+$("#fsdlg").addEventListener("cancel", e => { if (fsDirty() && !confirm("Discard your changes?")) e.preventDefault(); });
+$("#fsdlg").addEventListener("close", () => { if (fs) fs.edit = null; });
 
 // ------------------------------------------------------------ install a port (the device's own harbourmaster)
 let inst = null;   // {dev, res, upload, job}

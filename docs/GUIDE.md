@@ -87,6 +87,13 @@ agents see [AGENTS.md](AGENTS.md).
 - **Installed ports** (card button, or `devhub ports DEV`): read-only list from each port's `port.json`, plus
   launchers PortMaster does not manage and installed runtimes. The *Log* column opens a port's log files in the
   Console, following them live; *Save* there downloads the whole file from the device.
+- **Files** (card button): a file manager for the device. Browse from the ports folder (or PortMaster's folder, your
+  home folder, `/tmp`, `/`, or a path you type), and upload (button or drop files on the list), download, edit text
+  files, make folders and files, rename, change permissions (`755`, `+x`), copy or cut and paste into another folder,
+  and delete. Ctrl/Shift-click selects several; Delete, F2 (rename) and Backspace (parent folder) work as keys.
+  Editing keeps a file's permissions, and saves LF line endings (a file with CRLF says so before you save). Changes
+  run as the SSH user, with `sudo -n` only where that user is refused. When an agent holds the device you are asked
+  before anything is changed; DeviceHub never changes `/`, top-level folders or `/proc`, `/sys`, `/dev`, `/run`.
 
 ## Watching
 

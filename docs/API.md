@@ -61,6 +61,16 @@ reads one. With *Send files over HTTP* on, the device downloads it from DeviceHu
 `PortMaster.zip` or runtime `.squashfs` is never copied this way: upload it and install it (below), so the device's
 own PortMaster installs it.
 
+**File manager** (the dashboard's Files dialog): `GET /api/devices/<dev>/fs?path=/abs/path` lists a folder without a
+lock (default: the ports folder; `~`: the SSH user's home): `{"path", "writable", "entries": [{"name", "type":
+"d"|"f"|"l"|"o", "dir", "size", "mtime", "mode"}], "total", "places", "lock"}`. `POST /api/devices/<dev>/fs` changes
+files, with the lock: `op` is `mkdir` or `newfile` (`path`), `rename` (`path`, `to` in the same folder), `chmod`
+(`path`, `mode` like `755` or `+x`), `rm` (`paths`), or `mv`/`cp` (`paths`, `to` = a folder, `overwrite`). From the
+dashboard (`client: "ui"`) no lock is needed, but a device a session holds answers `{"ok": false, "status": "busy"}`
+until the request is repeated with `force: true`. The page uploads with `PUT .../file` and the header
+`X-DevHub-Client: ui` (`&force=1` likewise); `GET .../file?...&dl=1` adds a download file name. A replaced file keeps
+its permissions.
+
 ## FPS
 
 | Call | Body | Notes |
