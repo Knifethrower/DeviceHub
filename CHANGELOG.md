@@ -20,7 +20,7 @@ Releases before 1.8.0 were tagged afterwards, on the commit each one ended with;
   view streamer are uploaded as the user's own files (written as root they stayed non-executable: input never
   started); stopping a stale helper no longer matches its own shell.
 - Live view: stopping it on a non-root device (dArkOS) left the streamer running (it runs with sudo), still sending to a
-  port the next live view would get; the receiver now also takes packets only from its device's address.
+  port the next live view would get; the receiver takes one sender: its device's address, or (NAT, adb forwarding) the only other one after 1.5 s.
 - Beacon autostart is per device and off by default: switched on the beacon list (per device, or All on/off) and
   sent in the signed answer; on, it only starts on the network it was switched on in. A running beacon stops when
   the device joins another network. SSH off: the beacon starts it for this boot the way the CFW's menu does.

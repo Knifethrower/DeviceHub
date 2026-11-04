@@ -3908,6 +3908,8 @@ class StreamReceiver(threading.Thread):
     def __init__(self, dev, port, fps, mode, src=None):
         super().__init__()
         self.dev, self.port, self.fps, self.mode = dev, port, fps, mode
+        self.latched = None      # the one sender taken (see accept)
+        self.others = {}         # other senders: first seen
         self.src = src           # the device's address: packets from anywhere else are dropped (a streamer left
                                  # running elsewhere sends to the same port; its frames showed in another device's view)
         self.lock = threading.Lock()
@@ -3925,6 +3927,24 @@ class StreamReceiver(threading.Thread):
         self.bound = False
         self.last_pkt = 0.0      # arrival of any packet, including the static-screen keepalive
 
+    LATCH_WAIT = 1.5             # s: how long another sender waits for the device's own address to show up
+
+    def accept(self, ip):
+        """Take packets from one sender only, so a streamer left running elsewhere can't show in this view. The
+        device's own address wins; but the stream can come from somewhere else (NAT, adb forwarding, WSL, a
+        network mode), so if only another sender shows up, it is taken after LATCH_WAIT."""
+        if self.latched:
+            return ip == self.latched
+        if not self.src or ip == self.src:
+            self.latched = ip
+            return True
+        first = self.others.setdefault(ip, time.monotonic())
+        if time.monotonic() - first >= self.LATCH_WAIT and len(self.others) == 1:
+            self.latched = ip
+            log("stream", self.dev, "stream comes from %s, not %s: taking it" % (ip, self.src))
+            return True
+        return False
+
     def run(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -3941,7 +3961,7 @@ class StreamReceiver(threading.Thread):
                     pkt, addr = s.recvfrom(65536)
                 except socket.timeout:
                     continue
-                if self.src and addr[0] != self.src:
+                if not self.accept(addr[0]):
                     continue
                 try:
                     self.feed(pkt)
