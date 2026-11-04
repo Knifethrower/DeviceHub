@@ -159,7 +159,13 @@ for _ in range(50):
     time.sleep(0.02)
 sb.sendto(pack_cfg(W, H, bpp), ("127.0.0.1", 19872))
 time.sleep(0.3)
-assert other.cfg is None and other.frame is None, "a packet from another address was taken"
+assert other.cfg is None and other.frame is None, "a packet from another address was taken at once"
+# ...but when it's the only sender (NAT, adb forwarding), it is taken after a short wait, and then only it
+time.sleep(dh.StreamReceiver.LATCH_WAIT)
+sb.sendto(pack_cfg(W, H, bpp), ("127.0.0.1", 19872))
+time.sleep(0.3)
+assert other.cfg is not None and other.latched == "127.0.0.1", "the only sender was never taken"
+assert not other.accept("10.255.255.9"), "a second sender was taken after latching"
 other.close()
 sb.close()
 print("stream-receiver test OK")
