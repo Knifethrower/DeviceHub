@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.11.2"     # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.11.3"    # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -488,7 +488,7 @@ def clean_device(src, old=None):
             raise ApiError(400, "%s must be an absolute WSL path" % k)
     d["name"] = d["name"] or d["id"]
     if isinstance((src or {}).get("cards"), list):
-        d["cards"] = clean_cards(d, src["cards"], (old or {}).get("cards") or [])
+        d["cards"] = clean_cards(d, src["cards"], (old or {}).get("cards") or [], (old or {}).get("cfw"))
         if src.get("card"):
             d["card"] = str(src["card"])
     if not isinstance(d.get("cards"), list):
@@ -515,9 +515,10 @@ def clean_device(src, old=None):
     return d
 
 
-def clean_cards(d, cards, old_cards):
+def clean_cards(d, cards, old_cards, old_cfw=None):
     """SD-card profiles from the editor. Each keeps its password slot and host-key file across edits (matched by
-    id); the first card ever made inherits the device's own slot (its existing password and known host key)."""
+    id). When a device first gets profiles, only the one for the card it already had (same CFW) inherits the device's
+    own slot (its existing password and known host key); any other profile starts clean and learns its own key."""
     if len(cards) > 8:
         raise ApiError(400, "at most 8 card profiles")
     oldc = {c["id"]: c for c in old_cards}
@@ -548,8 +549,10 @@ def clean_cards(d, cards, old_cards):
         if prev:
             card["legacy"] = prev.get("legacy", False)
         out.append(card)
-    if out and not any(c.get("legacy") for c in out) and not any(c.get("legacy") for c in old_cards):
-        out[0]["legacy"] = True       # the device's existing password and known host key
+    if out and not old_cards:
+        same = out[0] if old_cfw is None else next((c for c in out if c["cfw"] == old_cfw), None)
+        if same:
+            same["legacy"] = True     # the device's existing password and known host key
     for c in out:
         c.setdefault("legacy", False)
     return out
@@ -847,9 +850,9 @@ def connect(dev, d):
             switch_card(dev, found["id"], "SD card swapped: detected by its SSH host key")
             return
         if state == "hostkey_changed":
-            msg = ("the device answers with a host key none of its card profiles knows: a new SD card? Pick its card "
-                   "profile on the card (a profile learns its key on first connect), or Forget host key if this card "
-                   "was reflashed")
+            msg = ("the device answers with a host key none of its card profiles knows: a new SD card? Pick a profile "
+                   "that has never connected (it learns the key then); if \"%s\" is the right profile, use Forget host "
+                   "key under the device's details" % active_card(d)["label"])
     m["fails"] = m.get("fails", 0) + 1
     m["next_try"] = now() + min(300, 10 * 2 ** min(m["fails"], 5))
     set_master(dev, state, msg)

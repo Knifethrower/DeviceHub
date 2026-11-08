@@ -6,6 +6,11 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.11.3 (2026-11-08)
+- Card profiles: when a device first gets profiles, only one with the CFW the device already had inherits its saved
+  host key and password. The first row used to inherit them whatever it was, so a profile for a new card was refused
+  with a host key mismatch and could never learn its key. The mismatch message now names the way out.
+
 ## 1.11.2 (2026-11-08)
 - A device that is on the network but refuses SSH shows as "on network, SSH off" instead of "offline".
 
