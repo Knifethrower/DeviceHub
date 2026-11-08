@@ -2696,7 +2696,7 @@ function field(f, v, d) {
   if (f.type === "checkbox") return `<label class="${cls}" data-show="${f.k}"><input id="${id}" type="checkbox" ${v[f.k] ? "checked" : ""}><span>${(CARD_KEYS.includes(f.k) || f.k === "_pw") && edCards.length > 1 ? "▣ " : ""}${f.label}</span></label>`;
   let input;
   const opts = typeof f.select === "function" ? f.select() : f.select;
-  if (opts) input = `<select id="${id}">${(v[f.k] && !opts.some(([val]) => val === String(v[f.k])) ? [[String(v[f.k]), String(v[f.k])]] : []).concat(opts).map(([val, lab]) => `<option value="${esc(val)}" ${String(v[f.k]) === val ? "selected" : ""}>${esc(lab)}</option>`).join("")}</select>`;
+  if (opts) input = `<select id="${id}">${(f.k === "cfw" && !v.cfw ? [["", "Pick this card's CFW…"]] : []).concat(v[f.k] && !opts.some(([val]) => val === String(v[f.k])) ? [[String(v[f.k]), String(v[f.k])]] : []).concat(opts).map(([val, lab]) => `<option value="${esc(val)}" ${String(v[f.k]) === val ? "selected" : ""}>${esc(lab)}</option>`).join("")}</select>`;
   else if (f.type === "textarea") input = `<textarea id="${id}" rows="2" placeholder="${esc(f.ph || "")}">${esc(v[f.k] || "")}</textarea>`;
   else input = `<input id="${id}" ${f.type === "number" ? 'type="number" min="0"' : 'type="text"'} ${f.list ? `list="${f.list}"` : ""} value="${esc(v[f.k] ?? "")}"
       placeholder="${esc(f.ph || "")}" ${f.createOnly && d ? "disabled" : ""} ${f.mono ? 'class="mono"' : ""} spellcheck="false">`;
@@ -2763,9 +2763,16 @@ $("#edbody").addEventListener("change", e => {
     const v = stashCard(); edIdx = +e.target.value; renderEditor(v); return;
   }
   if (id === "f_cfw") {
-    const v = readForm(), prev = $("#edbody")._prevCfw;
-    applyPreset(v, v.cfw, prev); $("#edbody")._prevCfw = v.cfw;
-    for (const k of ["user", "auth", "ports_dir", "fe_proc", "fe_start", "fe_stop", "fe_reload", "fe_alt", "smb"]) { const el = $("#f_" + k); if (el) el.value = v[k] ?? ""; }
+    const v = readForm(), prev = $("#edbody")._prevCfw, c = edCards[edIdx], keys = ["user", "auth", "ports_dir", "fe_proc", "fe_start", "fe_stop", "fe_reload", "fe_alt", "smb"];
+    if (c.isNew) {     // an unsaved profile is exactly what the CFW picked says, whatever was picked before
+      for (const k of keys) v[k] = "";
+      applyPreset(v, v.cfw, null);
+      v.auth = v.auth || "password";
+      const lab = $("#edcardlabel");
+      if (lab && (!lab.value.trim() || lab.value === "Card" || lab.value === c.autoLabel)) lab.value = c.autoLabel = v.cfw ? v.cfw + " card" : "";
+    } else applyPreset(v, v.cfw, prev);
+    $("#edbody")._prevCfw = v.cfw;
+    for (const k of keys) { const el = $("#f_" + k); if (el) el.value = v[k] ?? ""; }
   }
   if (id === "f_type" && RC && RC.byName[e.target.value.trim()]) {
     const nm = $("#f_name"); if (nm && !nm.value) nm.value = e.target.value.trim().replace(/^(Anbernic|TRIMUI|TrimUI|PowKiddy|Powkiddy|Retroid|Miyoo|AYANEO|AYN) /, "");
@@ -2799,14 +2806,10 @@ $("#edbody").addEventListener("click", async e => {
   }
   if (e.target.id === "edcardadd") {
     const v = stashCard();
-    const cfw = c.cfw === "Knulli" ? "dArkOS" : "Knulli";
-    const n = Object.assign({ id: "", has_password: false }, Object.fromEntries(CARD_KEYS.map(k => [k, ""])),
-      { cfw, port: c.port || 22, host: v.host });
-    applyPreset(n, cfw, null);
-    delete n.host; n.label = cfw + " card";
+    const n = Object.assign({ id: "", label: "", has_password: false, isNew: true }, Object.fromEntries(CARD_KEYS.map(k => [k, ""])), { port: 22 });
     edCards.push(n); edIdx = edCards.length - 1;
     renderEditor(v);
-    snack("New card profile: pick its CFW and enter its login");
+    snack("New card profile: pick its CFW");
   }
   if (e.target.id === "edcarddel" && edCards.length > 1) {
     if (!confirm(`Remove the ${c.label} card profile${c.has_password ? " and its saved password" : ""}?`)) return;
@@ -2818,6 +2821,8 @@ $("#edbody").addEventListener("click", async e => {
 $("#edform").addEventListener("submit", async e => {
   e.preventDefault();
   const v = stashCard();
+  const unpicked = edCards.findIndex(c => !c.cfw);
+  if (unpicked >= 0) { edIdx = unpicked; renderEditor(v); return snack("Pick a CFW for the new card profile", true); }
   const withCards = edCards.length > 1 || (edDev && edDev.cards && edDev.cards.length);
   if (withCards) {
     v.cards = edCards.map(c => Object.assign({ id: c.id, label: c.label }, Object.fromEntries(CARD_KEYS.map(k => [k, c[k]]))));
