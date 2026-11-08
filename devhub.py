@@ -900,12 +900,38 @@ def c_start(a):
     if REMOTE:
         print("DEVHUB_URL points at %s: start or stop that DeviceHub there" % REMOTE, file=sys.stderr)
         return 3
-    try:
-        call("GET", "/api/ping", timeout=3)
+    def up(wait):
+        for i in range(max(1, int(wait * 2))):
+            try:
+                call("GET", "/api/ping", timeout=2)
+                return True
+            except HubDown:
+                if i:
+                    time.sleep(0.5)
+        return False
+
+    if up(0):
         print("DeviceHub already running: " + url(), file=sys.stderr)
         return 0
-    except HubDown:
-        pass
+    # Installed as a systemd service (setup/install.sh): that service is the hub. It may be restarting right now; a
+    # loose copy started here would take its port and keep the service from coming back (it did: 2026-11-07).
+    svc = ["systemctl"] if not IS_WIN else ["wsl.exe", "-u", "root", "-e", "systemctl"]
+    try:
+        is_svc = PORT == 8765 and subprocess.run(svc + ["is-enabled", "devhub"], capture_output=True,
+                                                 timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        is_svc = False
+    if is_svc:
+        if up(15):
+            print("DeviceHub is back: " + url(), file=sys.stderr)
+            return 0
+        subprocess.run(svc + ["start", "devhub"], capture_output=True, timeout=60)
+        if up(20):
+            print("DeviceHub service started: " + url(), file=sys.stderr)
+            return 0
+        print("the DeviceHub service did not come up; see %s and: systemctl status devhub" %
+              os.path.join(DATA, "devhubd.log"), file=sys.stderr)
+        return 3
     env_pre = ["env", "DEVHUB_PORT=%d" % PORT, "DEVHUB_DATA=%s" % wsl_path(DATA)]
     server = wsl_path(os.path.join(HERE, "devhubd.py"))
     if IS_WIN:

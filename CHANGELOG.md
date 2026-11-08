@@ -6,6 +6,11 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.11.1 (2026-11-08)
+- A `devhub` command that finds the hub down no longer starts a loose copy when DeviceHub is installed as a systemd
+  service: it waits for a restarting service, else starts the service. A loose copy took the port and kept the
+  service from coming back.
+
 ## 1.11.0 (2026-11-07)
 - Locked devices stay awake: while a lock is held (or its holder is being asked whether it still needs the device),
   muOS doesn't dim the screen or sleep (a process from its idle watch list) and Knulli's battery-saver is paused (a
