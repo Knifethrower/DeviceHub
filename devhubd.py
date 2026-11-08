@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.10.0"     # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.11.0"     # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -1107,6 +1107,56 @@ def fe_up(d, st):
     return bool(st.get("fe") or (d.get("fe_alt") and st.get("fealt")))
 
 
+# Keep a locked device awake: an agent's test sends no input, so the CFW would dim the screen and put it to sleep.
+# Per CFW: the name the keep-awake process runs under, and a pause file it holds.
+#   muOS: idle.sh stops display dimming and sleep while a process from its watch list runs; "muxcredits" is the one
+#         nothing else looks for (only a factory reset runs the real one).
+#   Knulli: the battery-saver pauses while a file exists in /var/run/battery-saver.
+# The process ends by itself at a deadline the hub keeps moving (AWAKE_SECS), so a hub that went away can't keep a
+# device awake for good; releasing the lock ends it at once.
+AWAKE_CFW = {"muOS": ("muxcredits", ""), "Knulli": ("devhub-awake", "/var/run/battery-saver/devhub.pause")}
+AWAKE_SECS = 600
+AWAKE_SH = r"""
+D=/tmp/devhub-awake
+mkdir -p $D
+if [ "$SECS" = 0 ]; then rm -f $D/until; exit 0; fi
+echo $(( $(date +%s) + SECS )) > $D/until
+[ -f $D/pid ] && kill -0 "$(cat $D/pid)" 2>/dev/null && exit 0
+cat > "$D/$NAME" <<'EOF'
+#!/bin/sh
+# DeviceHub keeps this device awake while it is locked; this ends by itself at the time in /tmp/devhub-awake/until
+D=/tmp/devhub-awake
+[ -n "$PAUSE" ] && mkdir -p "$(dirname "$PAUSE")" && touch "$PAUSE"
+while [ -f $D/until ] && [ "$(date +%s)" -lt "$(cat $D/until 2>/dev/null || echo 0)" ]; do sleep 5; done
+[ -n "$PAUSE" ] && rm -f "$PAUSE"
+rm -f $D/until $D/pid
+EOF
+chmod 755 "$D/$NAME"
+PAUSE="$PAUSE" nohup "$D/$NAME" </dev/null >/dev/null 2>&1 &
+echo $! > $D/pid
+"""
+
+
+def keep_awake(dev, d=None):
+    """Hold the device awake while it is locked; let go when it is not. Cheap to call often."""
+    d = d or H.devices.get(dev)
+    how = AWAKE_CFW.get((d or {}).get("cfw") or "")
+    if not how:
+        return
+    r = rt(dev)
+    lk = H.locks.get(dev)
+    want = bool(lk and lk.get("state") in ("held", "check"))    # a stale lock's holder is idle: let it sleep
+    if want == bool(r.get("awake_at")) and (not want or now() - r["awake_at"] < AWAKE_SECS / 2.5):
+        return
+    try:
+        rc, _, err = ssh_run(d, "sh -s", inp=remote_sh(AWAKE_SH, SECS=AWAKE_SECS if want else 0, NAME=how[0],
+                                                        PAUSE=how[1]).encode(), timeout=20)
+    except subprocess.TimeoutExpired:
+        return
+    if rc == 0:
+        r["awake_at"] = now() if want else 0
+
+
 def poll_status(dev, d=None):
     d = d or H.devices.get(dev)
     if not d:
@@ -1135,6 +1185,10 @@ def poll_status(dev, d=None):
         battery_watch(dev, d, st)
     except Exception:
         log("battery watch", dev, traceback.format_exc())
+    try:
+        keep_awake(dev, d)
+    except Exception:
+        log("keep awake", dev, traceback.format_exc())
     return st
 
 
@@ -1699,6 +1753,7 @@ def do_acquire(dev, c, body):
                "user": " (approved by the user)",
                "away": " (approved automatically: the user is away)"}.get(approved.get("by"), " (approved)")
     event(dev, "lock", "taken by %s for %s: %s%s" % (c["name"], fmt_dur(ttl), purpose, how), c["name"])
+    threading.Thread(target=keep_awake, args=(dev,), daemon=True).start()     # no dimming or sleep mid-test
     return {"ok": True, "status": "acquired",
             "msg": "%s is yours until %s%s%s. Release it when done: devhub release %s" % (
                 dname(d), hm(now() + ttl), " (kept while '%s' runs)" % watch if watch else "", how, dev)}
@@ -1736,6 +1791,7 @@ def release_lock(dev, why, by=None, notify_holder=False):
         save_state()
     if not lk:
         return None
+    threading.Thread(target=keep_awake, args=(dev,), daemon=True).start()     # the device may sleep again
     event(dev, "release", "%s (held by %s since %s)" % (why, lk["holder"]["name"], hm(lk["since"])), by)
     if notify_holder and not lk["holder"].get("ui"):
         add_notice(lk["holder"], "[DeviceHub] Your lock on %s was released: %s. Take it again before you change anything there." % (

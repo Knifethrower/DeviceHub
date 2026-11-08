@@ -30,6 +30,10 @@ agents see [AGENTS.md](AGENTS.md).
   told. A lock someone already holds stays; the holder is asked to finish up. *Put back in service* offers it to
   waiting agents at once.
 - **Shut down** (More…): asks first, names a lock holder and a running app.
+- **Kept awake while locked**: an agent's test sends no input, so DeviceHub keeps a locked device from dimming or
+  sleeping: on muOS a process from muOS's own idle watch list (`muxcredits`, in `/tmp/devhub-awake`), on Knulli a
+  battery-saver pause file (`/var/run/battery-saver/devhub.pause`). It stops when the lock ends, and by itself 10
+  minutes after DeviceHub last renewed it. Other CFWs: not handled yet.
 - **Low battery** (Settings): off the charger, a notification at `battery_alert_pct` (10%), and at
   `battery_shutdown_pct` (3%, two readings in a row) a clean shutdown: front end stopped (it saves its settings and
   game lists), sync, poweroff. A lock on the device is released and its holder told. Per device (Edit > Rules) the

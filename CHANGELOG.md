@@ -6,6 +6,11 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.11.0 (2026-11-07)
+- Locked devices stay awake: while a lock is held (or its holder is being asked whether it still needs the device),
+  muOS doesn't dim the screen or sleep (a process from its idle watch list) and Knulli's battery-saver is paused (a
+  pause file). It ends when the lock does, or by itself 10 minutes after DeviceHub stops renewing it.
+
 ## 1.10.0 (2026-11-03)
 - Files: a file manager on each device card. Browse folders, upload (also by dropping files), download, edit text
   files, new folder/file, rename, permissions, copy/cut and paste, delete. Listing needs no lock; changes ask you first
