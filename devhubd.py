@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.11.1"     # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.11.2"     # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -717,6 +717,17 @@ def tcp_ok(host, port, timeout=1.5):
         return False
 
 
+def tcp_state(host, port, timeout=1.5):
+    """"open", "refused" (the device answered: it is on the network, nothing listens on that port) or "" (no answer)."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return "open"
+    except ConnectionRefusedError:
+        return "refused"
+    except OSError:
+        return ""
+
+
 def master_alive(d):
     s = sock_path(d)
     if not os.path.exists(s):
@@ -928,12 +939,14 @@ def upkeep(dev):
         r["online"] = None
         return
     alive, pid = master_alive(d)
-    online = alive or tcp_ok(d["host"], d["port"])   # no bare TCP probes (log noise on the device) while connected
+    tcp = "open" if alive else tcp_state(d["host"], d["port"])   # no bare TCP probes (log noise on the device) while connected
+    online = tcp == "open"
     if online != r["online"]:
         if r["online"] is not None:
             event(dev, "net", "%s is %s" % (dname(d), "online" if online else "offline"))
         r["online"] = online
         r["changed"] = now()
+    r["ssh_off"] = tcp == "refused"
     if d["smb"] and now() - r["smb_at"] > 60:
         r["smb"] = tcp_ok(d["host"], 445)
         r["smb_at"] = now()
@@ -3075,7 +3088,7 @@ def device_public(d):
     rc = rc_cache()["devices"].get(d.get("rc_slug") or "")
     v["rc"] = {k: rc.get(k) for k in ("name", "url", "cpu", "size", "aspect", "battery", "released", "os", "storage")} if rc else None
     v["paused"] = dev in H.paused
-    v["rt"] = {"online": r["online"], "smb": r["smb"], "changed": r["changed"], "reach_at": r["reach_at"],
+    v["rt"] = {"online": r["online"], "ssh_off": r.get("ssh_off", False), "smb": r["smb"], "changed": r["changed"], "reach_at": r["reach_at"],
                "master": {k: x for k, x in r["master"].items() if k not in ("retry",)},
                "status": r["status"], "status_at": r["status_at"], "status_err": r["status_err"]}
     lk = H.locks.get(dev)

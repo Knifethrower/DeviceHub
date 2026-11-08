@@ -234,7 +234,7 @@ def c_status(a):
         rt = d["rt"]
         s = rt.get("status") or {}
         m = rt["master"]
-        net = "disabled" if not d["enabled"] else ("online" if rt["online"] else "offline" if rt["online"] is False else "?")
+        net = "disabled" if not d["enabled"] else ("online" if rt["online"] else "ssh-off" if rt.get("ssh_off") else "offline" if rt["online"] is False else "?")
         ssh = m["state"] + ("" if m["state"] != "up" else "(hub)" if m.get("owned") else "(ext)")
         bits = ["OUT OF SERVICE%s" % (" (%s)" % d["oos_note"] if d.get("oos_note") else "")] if d.get("oos") else []
         if len(d.get("cards") or []) > 1:

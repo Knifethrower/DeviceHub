@@ -594,7 +594,7 @@ const SSH = {
 
 function card(d) {
   const r = d.rt, m = r.master, s = r.status || {}, fresh = r.status_at && S.now - r.status_at < 600;
-  const net = !d.enabled ? ["mute", "disabled"] : r.online ? ["ok", "online"] : r.online === false ? ["bad", "offline"] : ["mute", "checking"];
+  const net = !d.enabled ? ["mute", "disabled"] : r.online ? ["ok", "online"] : r.ssh_off ? ["warn", "on network, SSH off"] : r.online === false ? ["bad", "offline"] : ["mute", "checking"];
   const sp = SSH[m.state] || ["mute", m.state];
   let sshLabel = sp[1];
   if (m.state === "up") sshLabel += m.owned ? " · DeviceHub" : " · external";
