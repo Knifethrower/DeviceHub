@@ -286,7 +286,10 @@ def c_status(a):
 def c_acquire(a):
     import time
     body = ident(a)
-    body.update(dev=a.dev, purpose=a.purpose, ttl=a.for_, watch=a.watch, need=a.need)
+    if a.release_on_exit and not a.watch:
+        print("--release-on-exit needs --watch NAME", file=sys.stderr)
+        return 2
+    body.update(dev=a.dev, purpose=a.purpose, ttl=a.for_, watch=a.watch, need=a.need, release_on_exit=a.release_on_exit)
     wait_s = parse_secs(a.wait) if a.wait else 0
     end = time.time() + wait_s
     last, asked, moves = None, a.dev, 0
@@ -1057,6 +1060,8 @@ def main(argv):
     s.add_argument("--for", dest="for_", metavar="DURATION", help="lease, e.g. 30m (default from settings)")
     s.add_argument("--wait", metavar="DURATION", help="wait in line this long if it is busy")
     s.add_argument("--watch", metavar="NAME", help="keep the lease while a process matching NAME runs on the device")
+    s.add_argument("--release-on-exit", action="store_true", help="with --watch: release the lock when that job ends and "
+                                                                  "the device is clean, instead of asking")
     s.add_argument("--need", metavar="REASON", help="why you need this device: keeps you waiting for it when others are "
                                                     "free (without it a waiting acquire is moved to a free device)")
     s = sp("renew", c_renew, "keep the lock longer (answers a lock check)")

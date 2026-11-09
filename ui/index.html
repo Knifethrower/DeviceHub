@@ -2987,6 +2987,7 @@ const SETTINGS = [
   ["approval_timeout_min", "Sessions' device requests count as yes after (minutes, devices set to auto-yes)", "number"],
   ["approval_chain_min", "Request chains: a request within this long after an approval or an approved session's end is approved at once (minutes, 0 = off)", "number"],
   ["watch_extend_min", "A watched job keeps the lease this far ahead (minutes)", "number"],
+  ["hold_limit_min", "Hold limit: no more lease extensions after this long while others wait, unless a watched job is running (minutes, 0 = off)", "number"],
   ["status_interval_s", "Status poll interval (seconds)", "number"],
   ["battery_alert_pct", "Off the charger: notify me at this battery level (%, 0 = off)", "number"],
   ["battery_shutdown_pct", "Off the charger: shut the device down cleanly at this battery level (%, 0 = off)", "number"],

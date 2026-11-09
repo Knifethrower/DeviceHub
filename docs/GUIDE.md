@@ -57,7 +57,9 @@ agents see [AGENTS.md](AGENTS.md).
 - **Lock checks**: a lock is a lease. When it runs out (or a `--watch` job ends), DeviceHub asks the holder whether
   it still needs the device. No answer in time: you get a notification; a stale lock whose holder is idle is
   released if the device is clean (front end running, no app left open). An agent session that ends releases its
-  locks.
+  locks. With `--release-on-exit`, a `--watch` lock is released as soon as its job ends and the device is clean.
+- **Hold limit**: after 60 minutes (setting, 0 = off), an agent can't extend its lease while others wait. It keeps the
+  lock until it releases and can rejoin the line. A running `--watch` job and locks you take in the web UI are exempt.
 - **Queues and offers**: agents wait in line for busy devices; a waiting agent that doesn't need that exact device
   is moved to a free one. Devices that come online are offered to waiting agents.
 - **Guard** (Claude Code hooks): an agent's raw shell command that names a device (IP, socket, extra match words) is

@@ -6,6 +6,13 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.13.0 (2026-11-09)
+- Hold limit: an agent that has held a device for 60 minutes (setting, 0 = off) can't extend its lease while others
+  wait, so one long session can't starve the line. It keeps the lock until it releases; a running `--watch` job and
+  locks taken in the web UI are exempt.
+- `acquire --watch NAME --release-on-exit`: the lock is released as soon as the job ends and the device is clean,
+  instead of asking the holder. Ideas from issue #7.
+
 ## 1.12.0 (2026-11-08)
 - Add card profile starts empty and asks for the card's CFW. Login, folders, front-end commands and the name then come
   from that CFW alone, instead of a guessed CFW with leftovers from an earlier pick. Saving needs a CFW on every profile.

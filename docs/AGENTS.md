@@ -46,7 +46,8 @@ same lock rules; everything shows in the device's Console). `devhub env` needs D
    exact device, say why: `--need "720x720 layout test"`.
 5. **A lock is a lease.** When it runs out DeviceHub asks whether you still need the device. The question shows up
    in the output of your next devhub command (and through the hooks in Claude Code). Answer with
-   `devhub renew DEV 30m "why"` or `devhub release DEV`.
+   `devhub renew DEV 30m "why"` or `devhub release DEV`. After a long hold (60 minutes by default), a renew is
+   refused while others wait: finish, release, and `acquire --wait` to rejoin at the end of the line.
 6. **Ports are installed, not copied.** A port zip, `PortMaster.zip` or a runtime `.squashfs` goes on with
    `devhub install`: the device's own PortMaster installs it (folders, port.json, game list, permissions).
    `devhub push` is for every other file (test builds, configs, data) and refuses port zips and runtimes;
@@ -63,6 +64,7 @@ devhub status [DEV]                                   devices, connections, who 
 devhub acquire DEV "purpose" [--for 45m]              take the lock (exit 1 = busy/refused, the message says why)
 devhub acquire DEV "purpose" --wait 20m [--need WHY]  wait in line
 devhub acquire DEV "purpose" --watch NAME             lease kept while a process called NAME runs on the device
+devhub acquire DEV "purpose" --watch NAME --release-on-exit   and released when it ends, if the device is clean
 devhub renew DEV [30m] ["why"]                        still need it
 devhub release DEV                                    give it back
 devhub release DEV --dirty "why"                      give it back although the front end is down (user is told)
