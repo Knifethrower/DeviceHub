@@ -6,6 +6,17 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.14.0 (2026-11-11)
+- Server mode can use the sign-in in front of it (forward auth: Authelia, Authentik, oauth2-proxy) instead of its own
+  password: signed-in members of `DEVHUB_SSO_GROUP` (`admins`) get the page with no DeviceHub login, and **Log out**
+  shows who and goes to `DEVHUB_SSO_LOGOUT`. The person's headers count only beside a secret the proxy adds
+  (`DEVHUB_SSO_SECRET`, at least 16 characters); `DEVHUB_SSO_IGNORE_USERS` are never people. With `DEVHUB_SSO_URL`,
+  the port serves only devices and agents, and browser pages there go to the signed-in address. Header names can be
+  changed (Authentik's, say). `DEVHUB_PASSWORD` is optional behind a sign-in. The log says whether the sign-in is on and,
+  once each, why it isn't working. The compose file loads `sso.env`. See docs/SSO.md.
+- A request made by another site's page (`Sec-Fetch-Site` same-site or cross-site) can no longer act as the user with
+  the page's login: another name under the same domain could otherwise POST with the cookie.
+
 ## 1.13.0 (2026-11-09)
 - Hold limit: an agent that has held a device for 60 minutes (setting, 0 = off) can't extend its lease while others
   wait, so one long session can't starve the line. It keeps the lock until it releases; a running `--watch` job and

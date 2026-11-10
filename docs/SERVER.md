@@ -19,10 +19,11 @@ Open the page, log in, and press **Add device > Download devicehub.zip**. Withou
 
 | Variable | Meaning |
 |---|---|
-| `DEVHUB_PASSWORD` | the web page's login (required) |
+| `DEVHUB_PASSWORD` | the web page's login (required, unless a sign-in is in front: see below) |
 | `DEVHUB_PUBLIC_URL` | the URL beacons call (default: the address your browser used when downloading the port) |
 | `DEVHUB_HUB_NAME` | the hub's name on the device's screen and in its SSH key comment |
 | `DEVHUB_BIND`, `DEVHUB_PORT`, `DEVHUB_DATA` | listen address (0.0.0.0), port (8765), data folder |
+| `DEVHUB_SSO_*` | a sign-in in front of the hub instead of the password: see [SSO.md](SSO.md) |
 | `DEVHUB_LOG_STDERR` | `1` (the image's default): the log (`data/devhubd.log`) also goes to stderr, so `docker logs` shows it |
 
 ## Adding a handheld
@@ -80,7 +81,13 @@ because you ran the port since it booted. When it stops announcing, its card goe
   and `pull` then go through the hub (`/api/devices/<dev>/exec` and `/file`), which runs them over the device's
   shared connection with the usual lock rules. Agent tokens can never act as the user or stop the hub, and can be
   revoked. Agents on the server itself can keep using `data/token`.
-- Keep it on your LAN (or tailnet): don't publish it to the internet.
+- Keep it on your LAN (or tailnet): don't publish it to the internet, except through a sign-in (below).
+
+## Behind a sign-in
+
+The page can use the sign-in you have in front of your other services (Authelia, Authentik, oauth2-proxy...) instead
+of its own password: members of one group are logged in, and the port itself then serves only devices and agents.
+[SSO.md](SSO.md) has what the proxy must do, DeviceHub's `DEVHUB_SSO_*` settings, and recipes.
 
 ## Tests
 
