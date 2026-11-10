@@ -26,8 +26,8 @@ library only) is the reference client: everything here is what it sends.
 
 | Call | Body (besides identity) | Answer |
 |---|---|---|
-| `POST /api/lock/acquire` | `dev`, `purpose`, `ttl` (`"45m"`), `wait` (bool), `need`, `watch` | see below |
-| `POST /api/lock/renew` | `dev`, `ttl`, `note`, `watch` | `ok`, `msg` |
+| `POST /api/lock/acquire` | `dev`, `purpose`, `ttl` (`"45m"`), `wait` (bool), `need`, `watch`, `release_on_exit` (bool) | see below |
+| `POST /api/lock/renew` | `dev`, `ttl`, `note`, `watch` | `ok`, `msg`; `status: "hold_limit"` when refused by the hold limit |
 | `POST /api/lock/release` | `dev`, `dirty` (reason, optional) | `ok`, `msg` |
 | `POST /api/lock/ask` | `dev`, `text` | asks the holder whether it still needs the device |
 | `POST /api/whoami` | — | `caller`, `holds` |

@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.13.0"   # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.14.0"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -60,6 +60,7 @@ DEFAULT_SETTINGS = {
     "stale_release_min": 30,       # ...after being stale this long
     "idle_release_min": 30,        # ...and the holder idle this long
     "watch_extend_min": 10,        # a running watched job keeps the lease this far ahead
+    "hold_limit_min": 60,          # no more renewals after holding this long while others wait (0 = off)
     "status_interval_s": 60,
     "toasts": True,                # Windows notifications for things that need the user
     "approval_timeout_min": 10,    # 'auto' approval: a session's request counts as yes after this long
@@ -1682,12 +1683,16 @@ def do_acquire(dev, c, body):
         if lk and same(lk["holder"], c):
             if not lk["holder"].get("session") and c.get("session"):
                 lk["holder"]["session"] = c["session"]   # name-only lock: now we know its session
+            limited = hold_limit_reached(dev, c, lk)
+            if limited:       # still the holder, so ok; it just gets no more time
+                return {"ok": True, "status": "yours", "msg": "%s: you already hold it; lease ends %s. %s" % (
+                    dname(d), hm(lk["lease_until"]), limited)}
             lk["lease_until"] = max(lk["lease_until"], now() + ttl)
             lk["ttl"] = max(lk["ttl"], ttl)
             if body.get("purpose"):
                 lk["purpose"] = purpose
             if watch:
-                lk["watch"], lk["watch_seen"] = watch, False
+                lk["watch"], lk["watch_seen"], lk["watch_release"] = watch, False, bool(body.get("release_on_exit"))
             lk.update(state="held", check=None, stale_since=None, last_activity=now())
             save_state()
             return {"ok": True, "status": "yours", "msg": "%s: you already hold it; lease ends %s" % (dname(d), hm(lk["lease_until"]))}
@@ -1757,7 +1762,8 @@ def do_acquire(dev, c, body):
                 H.queues.pop(qdev)
         H.locks[dev] = {"holder": {"session": c["session"], "name": c["name"], "ui": bool(c.get("ui"))},
                         "purpose": purpose, "since": now(), "lease_until": now() + ttl, "ttl": ttl,
-                        "watch": watch, "watch_seen": False, "state": "held", "check": None,
+                        "watch": watch, "watch_seen": False, "watch_release": bool(watch and body.get("release_on_exit")),
+                        "state": "held", "check": None,
                         "stale_since": None, "last_activity": now(), "renewals": 0, "approved": bool(approved)}
         if approved:
             H.chain[dev] = now()
@@ -1775,6 +1781,24 @@ def do_acquire(dev, c, body):
                 dname(d), hm(now() + ttl), " (kept while '%s' runs)" % watch if watch else "", how, dev)}
 
 
+def hold_limit_reached(dev, c, lk):
+    """Why this holder gets no more time, or "": it has had the device hold_limit_min, someone is waiting and no
+    watched job is running. The lock itself stays: the holder finishes, releases and joins the end of the line."""
+    limit = H.settings.get("hold_limit_min", 0) * 60
+    if not limit or c.get("ui") or lk["holder"].get("ui") or now() - lk["since"] < limit:
+        return ""
+    w = rt(dev).get("watch")
+    if lk.get("watch") and w and w[2] == lk["watch"] and w[0] > 0:
+        return ""
+    waiting = [e for e in prune_queue(dev) if not same(e, c)]
+    if not waiting:
+        return ""
+    return ("You have held it %s and %d %s waiting (next: %s), so the lease can't be extended. Finish up and "
+            "`devhub release %s`; to continue afterwards, `devhub acquire %s \"...\" --wait 30m` joins the end of the "
+            "line." % (fmt_dur(now() - lk["since"]), len(waiting), "session is" if len(waiting) == 1 else "sessions are",
+                       waiting[0]["name"], dev, dev))
+
+
 def do_renew(dev, c, body):
     d = need_device(dev)
     with H.lock:
@@ -1783,6 +1807,10 @@ def do_renew(dev, c, body):
             return {"ok": False, "status": "free", "msg": "%s is not locked: acquire it instead" % dname(d)}
         if not same(lk["holder"], c) and not c.get("ui"):
             return {"ok": False, "status": "busy", "msg": "%s holds it, not you" % lk["holder"]["name"]}
+        limited = hold_limit_reached(dev, c, lk)
+        if limited:
+            event(dev, "renew", "%s was refused more time: hold limit reached with others waiting" % c["name"], c["name"])
+            return {"ok": False, "status": "hold_limit", "msg": "%s: %s" % (dname(d), limited)}
         ttl = clamp_ttl(body.get("ttl"))
         if not lk["holder"].get("session") and c.get("session") and same(lk["holder"], c):
             lk["holder"]["session"] = c["session"]
@@ -2061,6 +2089,10 @@ def tick():
                     lk["lease_until"] = max(lk["lease_until"], t + H.settings["watch_extend_min"] * 60)
                     if lk["state"] != "held" and (lk.get("check") or {}).get("kind") == "watch":
                         lk.update(state="held", check=None, stale_since=None)
+                elif lk.get("watch_release") and lk.get("watch_seen") and lk["state"] == "held" and device_clean(dev) is True:
+                    todo.append((dev, "its watched job '%s' ended (--release-on-exit)" % lk["watch"]))
+                    H.dirty = True
+                    continue
                 elif (lk.get("watch_seen") or t - lk["since"] > 180) and lk["state"] == "held":
                     open_check(dev, lk, "watch", "the job it watched ('%s') is no longer running" % lk["watch"])
                 H.dirty = True
