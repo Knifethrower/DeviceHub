@@ -1,6 +1,8 @@
 # DeviceHub server: handhelds announce themselves to it (the beacon port) and it connects to them over SSH.
 # Put DEVHUB_PASSWORD (the web page's login) and DEVHUB_PUBLIC_URL in .env next to this file. Copy just this file:
 # it builds from the git repo, no checkout needed.
+# Behind a sign-in proxy (Authelia via netwatch, sso_header = on): netwatch-sso.env next to this file holds its secret;
+# set DEVHUB_SSO_URL (and DEVHUB_SSO_LOGOUT) in .env, and DEVHUB_PASSWORD becomes optional. See docs/SERVER.md.
 services:
   devicehub:
     # built straight from the repo, so this file works on its own (e.g. in a stacks folder); pull/rebuild to update
@@ -11,10 +13,16 @@ services:
     restart: unless-stopped
     # host networking: the hub sees each handheld's real source address and reaches the LAN directly
     network_mode: host
+    env_file:
+      - path: netwatch-sso.env    # NETWATCH_SSO_SECRET / NETWATCH_SSO_HEADER, when a sign-in proxy is in front
+        required: false
     environment:
-      DEVHUB_PASSWORD: ${DEVHUB_PASSWORD:?set DEVHUB_PASSWORD in .env}
+      DEVHUB_PASSWORD: ${DEVHUB_PASSWORD:-}           # the web page's password (not needed behind a sign-in)
       DEVHUB_PUBLIC_URL: ${DEVHUB_PUBLIC_URL:-}      # e.g. http://192.168.68.133:8765 (what the beacon calls)
       DEVHUB_HUB_NAME: ${DEVHUB_HUB_NAME:-DeviceHub}
+      DEVHUB_SSO_URL: ${DEVHUB_SSO_URL:-}            # e.g. https://devicehub.klorti.net: browser pages on the port go there
+      DEVHUB_SSO_LOGOUT: ${DEVHUB_SSO_LOGOUT:-}      # e.g. https://auth.klorti.net/logout
+      DEVHUB_SSO_GROUP: ${DEVHUB_SSO_GROUP:-admins}  # signed-in members of this group are logged in
       TZ: ${TZ:-UTC}
     volumes:
       - ./data:/data

@@ -6,6 +6,15 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.13.0 (2026-11-10)
+- Server mode behind a sign-in (Authelia forward-auth via Traefik, e.g. netwatch's `sso_header`): signed-in members
+  of `DEVHUB_SSO_GROUP` (`admins`) get the page with no login of its own. The `Remote-*` headers count only beside the
+  proxy's secret (`NETWATCH_SSO_SECRET`), and service keys (`svc-*`) are never people. With `DEVHUB_SSO_URL`, the port
+  serves only devices and agents, and browser pages there go to the signed-in name. `DEVHUB_PASSWORD` is optional
+  behind a sign-in; **Log out** shows who's signed in and goes to `DEVHUB_SSO_LOGOUT`. See docs/SERVER.md.
+- A request made by another site's page (`Sec-Fetch-Site` same-site or cross-site) can no longer act as the user with
+  the page's login: another name under the same domain could otherwise POST with the cookie.
+
 ## 1.12.0 (2026-11-08)
 - Add card profile starts empty and asks for the card's CFW. Login, folders, front-end commands and the name then come
   from that CFW alone, instead of a guessed CFW with leftovers from an earlier pick. Saving needs a CFW on every profile.
