@@ -82,6 +82,21 @@ $C -H "Sec-Fetch-Site: cross-site" -X PUT -d '{"client":"ui","settings":{"away_m
 [ "$(code -H X-Netwatch-Auth:$SECRET -H Remote-User:klops -H Remote-Groups:hub "$U/")" = 200 ] || fail "DEVHUB_SSO_GROUP"
 ok "password beside the sign-in, DEVHUB_SSO_GROUP"
 
+# --- a sign-in that isn't set up right says why, on the login page and once in the log
+curl -s -H X-Netwatch-Auth:stale -H Remote-User:klops "$U/login" | grep -q "doesn&#x27;t match NETWATCH_SSO_SECRET" || fail "a stale secret isn't explained"
+curl -s -H Remote-User:klops -H Remote-Groups:admins "$U/login" | grep -q "switch HEADER on" || fail "a missing header isn't explained"
+curl -s -H X-Netwatch-Auth:$SECRET -H Remote-User:klops "$U/login" | grep -q "no Remote-Groups for klops" || fail "missing groups aren't explained"
+grep -q "sign-in: on (X-Netwatch-Auth; hub are logged in); the port keeps the password login" "$T/b/devhubd.log" || fail "startup doesn't say the sign-in is on"
+[ "$(grep -c "doesn't match NETWATCH_SSO_SECRET" "$T/b/devhubd.log")" = 1 ] || fail "the problem isn't logged once"
+D=$(free_port)
+start_hub d "$D" NETWATCH_SSO_SECRET= DEVHUB_PASSWORD=pw DEVHUB_SSO_URL=https://x.example.net
+curl -s -H X-Netwatch-Auth:whatever -H Remote-User:klops "http://127.0.0.1:$D/login" | grep -q "NETWATCH_SSO_SECRET isn&#x27;t set on the hub" ||
+    fail "a missing secret isn't explained"
+grep -q "sign-in: off (no NETWATCH_SSO_SECRET): DEVHUB_SSO_URL is ignored" "$T/d/devhubd.log" || fail "startup doesn't say the sign-in is off"
+[ "$(code "http://127.0.0.1:$D/")" = 302 ] && [ "$(curl -s -o /dev/null -w '%{redirect_url}' "http://127.0.0.1:$D/")" = "http://127.0.0.1:$D/login" ] ||
+    fail "no secret: DEVHUB_SSO_URL must not lock the port"
+ok "a sign-in that isn't set up right says why"
+
 # --- neither a password nor a secret: refuses to start
 if env -u NETWATCH_SSO_SECRET DEVHUB_PORT=$(free_port) DEVHUB_DATA=$T/c DEVHUB_NO_AUTOSTART=1 timeout 10 "$PY" "$HERE/devhubsrv.py" > "$T/c.out" 2>&1; then
     fail "started without a password or a sign-in"

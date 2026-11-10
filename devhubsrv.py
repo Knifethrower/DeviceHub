@@ -54,6 +54,7 @@ for _k in ("beacon_auto_approve", "poll_devices"):
 H.beacons = {}      # beacon id -> record (beacons.json)
 H.nonces = {}       # nonce -> expiry
 H.login_fails = []
+H.sso_logged = set()
 
 
 def secret_file(name, nbytes):
@@ -152,14 +153,38 @@ def session_ok(handler):
 
 def sso(handler):
     """(through the sign-in, username, logged in) from the proxy's headers. Remote-* count only beside the proxy's own
-    secret; svc-* users are service keys (scripts), never people; only members of SSO_GROUP are logged in."""
-    if not SSO_SECRET:
-        return False, "", False
-    if not hmac.compare_digest((handler.headers.get(SSO_HEADER) or "").encode(), SSO_SECRET.encode()):
-        return False, "", False
+    secret; svc-* users are service keys (scripts), never people; only members of SSO_GROUP are logged in. A request
+    that looks like it came through a sign-in that isn't set up right leaves why in REQ.sso_problem, for the login
+    page and the log (saying what's missing gives nothing away: the secret itself is never shown)."""
+    D.REQ.sso_problem = ""
+    got = handler.headers.get(SSO_HEADER) or ""
     user = (handler.headers.get("Remote-User") or "").strip()
-    groups = {g.strip() for g in (handler.headers.get("Remote-Groups") or "").split(",")}
+    if not SSO_SECRET:
+        if got or user:
+            sso_problem("the sign-in sent %s, but NETWATCH_SSO_SECRET isn't set on the hub: load netwatch-sso.env "
+                        "in its compose file (env_file) and recreate the container" % (SSO_HEADER if got else "Remote-User"))
+        return False, "", False
+    if not hmac.compare_digest(got.encode(), SSO_SECRET.encode()):
+        if got:
+            sso_problem("%s doesn't match NETWATCH_SSO_SECRET: the hub has an old netwatch-sso.env (recreate the "
+                        "container) or another stack's" % SSO_HEADER)
+        elif user:
+            sso_problem("the sign-in sent Remote-User but no %s: switch HEADER on for this service in netwatch "
+                        "(sso_header = on)" % SSO_HEADER)
+        return False, "", False
+    groups = {g.strip() for g in (handler.headers.get("Remote-Groups") or "").split(",") if g.strip()}
+    if not user:
+        sso_problem("the sign-in passed no Remote-User")
+    elif not groups:
+        sso_problem("the sign-in passed no Remote-Groups for %s" % user)
     return True, user, bool(user) and not user.startswith("svc-") and SSO_GROUP in groups
+
+
+def sso_problem(why):
+    D.REQ.sso_problem = why
+    if why not in H.sso_logged:     # once per kind of problem, not per request
+        H.sso_logged.add(why)
+        log("sign-in:", why)
 
 
 def cross_site(handler, method):
@@ -210,6 +235,9 @@ def login_page(err=""):
 
 
 def login_hint():
+    problem = getattr(D.REQ, "sso_problem", "")
+    if problem:
+        return "Sign-in not set up right: " + problem
     other = getattr(D.REQ, "sso_other", "")
     if other:
         return "Signed in as %s, who isn't in %s%s" % (other, SSO_GROUP, ": log in with the hub's password" if PASSWORD else "")
@@ -613,11 +641,13 @@ def main():
         print("devhubsrv: set DEVHUB_PASSWORD (the web page's login) or NETWATCH_SSO_SECRET (a sign-in in front of it); "
               "refusing to serve the LAN without one")
         raise SystemExit(1)
-    if os.environ.get("DEVHUB_SSO_URL") and not SSO_SECRET:
-        print("devhubsrv: DEVHUB_SSO_URL is set without NETWATCH_SSO_SECRET: ignored, the port keeps the password login")
-    if SSO_SECRET and not PUBLIC_URL:
-        print("devhubsrv: set DEVHUB_PUBLIC_URL (the LAN address handhelds announce to): beacon downloads need it behind the sign-in")
     os.makedirs(D.DATA, exist_ok=True)
+    if SSO_SECRET:
+        log("sign-in: on (%s; %s are logged in)%s%s" % (
+            SSO_HEADER, SSO_GROUP, "; the port sends pages to " + SSO_URL if SSO_URL else "; the port keeps the password login",
+            "" if PUBLIC_URL else "; set DEVHUB_PUBLIC_URL (the LAN address handhelds announce to): beacon downloads need it"))
+    else:
+        log("sign-in: off (no NETWATCH_SSO_SECRET)%s" % (": DEVHUB_SSO_URL is ignored" if os.environ.get("DEVHUB_SSO_URL") else ""))
     D.BEACON_KEY = secret_file("beacon.key", 32)
     ensure_hub_key()
     H.beacons = D.load_json("beacons.json", {})
