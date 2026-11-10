@@ -9,24 +9,29 @@ On top of it:
     pinned, and an IP change from DHCP follows the device by itself.
   - Login: the web page needs DEVHUB_PASSWORD, or a sign-in in front of the hub (see below); only a logged-in page
     acts as the user (approvals, settings, Away mode). Agents use the API token (X-DevHub-Token), as before.
-  - Sign-in in front of the hub (Authelia forward-auth behind Traefik, e.g. netwatch's sso_header): requests through
-    the proxy carry the person in Remote-User/Remote-Groups and the proxy's secret in X-Netwatch-Auth. Those headers
-    count only when the secret matches NETWATCH_SSO_SECRET (anything reaching the port directly can send fake ones);
-    then members of DEVHUB_SSO_GROUP are logged in. With DEVHUB_SSO_URL set, the port itself serves only the
-    handhelds' and agents' API: browser pages there are sent to the signed-in name, and a password login there
-    doesn't count.
+  - Sign-in in front of the hub (a reverse proxy with forward auth: Authelia, Authentik, oauth2-proxy...): requests
+    through the proxy carry the person in headers (Remote-User/Remote-Groups) and a secret the proxy adds. Those
+    headers count only when the secret matches DEVHUB_SSO_SECRET (anything reaching the port directly can send fake
+    ones); then members of DEVHUB_SSO_GROUP are logged in. With DEVHUB_SSO_URL set, the port itself serves only the
+    handhelds' and agents' API: browser pages there are sent to the signed-in address, and a password login there
+    doesn't count. docs/SSO.md: what a proxy has to do, and the setup for some.
   - It listens on DEVHUB_BIND (0.0.0.0) instead of loopback only.
 
 Environment (besides devhubd's DEVHUB_PORT/DEVHUB_DATA):
-  DEVHUB_PASSWORD     the web page's login password (required unless NETWATCH_SSO_SECRET is set)
-  NETWATCH_SSO_SECRET the sign-in proxy's secret (netwatch-sso.env); NETWATCH_SSO_HEADER its header (X-Netwatch-Auth)
+  DEVHUB_PASSWORD     the web page's login password (required unless DEVHUB_SSO_SECRET is set)
+  DEVHUB_SSO_SECRET   the secret the sign-in proxy adds to every signed-in request, 16 characters or more (or
+                      DEVHUB_SSO_SECRET_FILE: a file holding it, e.g. a Docker secret)
+  DEVHUB_SSO_SECRET_HEADER  the header it comes in (default X-DevHub-SSO)
+  DEVHUB_SSO_USER_HEADER, DEVHUB_SSO_GROUPS_HEADER, DEVHUB_SSO_NAME_HEADER  the person's headers (default Remote-User,
+                      Remote-Groups: comma or | separated, Remote-Name: shown on the page)
   DEVHUB_SSO_GROUP    the group whose signed-in members are logged in (default: admins)
-  DEVHUB_SSO_URL      the hub's signed-in address, e.g. https://devicehub.klorti.net: browser pages on the port go there
-  DEVHUB_SSO_LOGOUT   where Log out goes after a sign-in, e.g. https://auth.klorti.net/logout
+  DEVHUB_SSO_IGNORE_USERS  users that are never people (scripts' keys), space-separated patterns, e.g. svc-*
+  DEVHUB_SSO_URL      the hub's signed-in address, e.g. https://devicehub.example.net: browser pages on the port go there
+  DEVHUB_SSO_LOGOUT   where Log out goes after a sign-in, e.g. https://auth.example.net/logout
   DEVHUB_PUBLIC_URL   the URL handhelds announce to, e.g. http://192.168.68.133:8765 (default: what the browser used)
   DEVHUB_HUB_NAME     the hub's name in the beacon's messages (default: DeviceHub)
 """
-import hashlib, hmac, html, io, json, os, re, secrets, subprocess, threading, time, urllib.parse, zipfile
+import fnmatch, hashlib, hmac, html, io, json, os, re, secrets, subprocess, threading, time, urllib.parse, zipfile
 
 os.environ.setdefault("DEVHUB_BIND", "0.0.0.0")
 os.environ.setdefault("DEVHUB_PLATFORM", "linux")
@@ -36,11 +41,37 @@ from devhubd import H, ApiError, route, now, event, alert, log   # noqa: E402
 PASSWORD = os.environ.get("DEVHUB_PASSWORD") or ""
 PUBLIC_URL = (os.environ.get("DEVHUB_PUBLIC_URL") or "").rstrip("/")
 HUB_NAME = os.environ.get("DEVHUB_HUB_NAME") or "DeviceHub"
-SSO_SECRET = os.environ.get("NETWATCH_SSO_SECRET") or ""
-SSO_HEADER = os.environ.get("NETWATCH_SSO_HEADER") or "X-Netwatch-Auth"
-SSO_GROUP = os.environ.get("DEVHUB_SSO_GROUP") or "admins"
-SSO_URL = (os.environ.get("DEVHUB_SSO_URL") or "").rstrip("/") if SSO_SECRET else ""
-SSO_LOGOUT = os.environ.get("DEVHUB_SSO_LOGOUT") or ""
+
+
+def setting(name):
+    return (os.environ.get(name) or "").strip()
+
+
+def sso_secret():
+    """(the secret, why there's none): DEVHUB_SSO_SECRET, else the file DEVHUB_SSO_SECRET_FILE names."""
+    if setting("DEVHUB_SSO_SECRET"):
+        return setting("DEVHUB_SSO_SECRET"), ""
+    path = setting("DEVHUB_SSO_SECRET_FILE")
+    if not path:
+        return "", ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip(), ""
+    except OSError as e:
+        return "", "can't read DEVHUB_SSO_SECRET_FILE: %s" % e
+
+
+SSO_SECRET, SSO_SECRET_PROBLEM = sso_secret()
+if SSO_SECRET and len(SSO_SECRET) < 16:
+    SSO_SECRET, SSO_SECRET_PROBLEM = "", "the secret is shorter than 16 characters: ignored"
+SSO_HEADER = setting("DEVHUB_SSO_SECRET_HEADER") or "X-DevHub-SSO"
+SSO_USER_HEADER = setting("DEVHUB_SSO_USER_HEADER") or "Remote-User"
+SSO_GROUPS_HEADER = setting("DEVHUB_SSO_GROUPS_HEADER") or "Remote-Groups"
+SSO_NAME_HEADER = setting("DEVHUB_SSO_NAME_HEADER") or "Remote-Name"
+SSO_GROUP = setting("DEVHUB_SSO_GROUP") or "admins"
+SSO_IGNORE = setting("DEVHUB_SSO_IGNORE_USERS").split()
+SSO_URL = setting("DEVHUB_SSO_URL").rstrip("/") if SSO_SECRET else ""
+SSO_LOGOUT = setting("DEVHUB_SSO_LOGOUT")
 SESSION_DAYS = 30
 BEACON_DIR = os.path.join(D.HERE, "beacon")
 OPEN_PATHS = {"/api/ping", "/api/beacon/hello", "/api/beacon", "/login", "/sw.js"}
@@ -152,32 +183,33 @@ def session_ok(handler):
 
 
 def sso(handler):
-    """(through the sign-in, username, logged in) from the proxy's headers. Remote-* count only beside the proxy's own
-    secret; svc-* users are service keys (scripts), never people; only members of SSO_GROUP are logged in. A request
-    that looks like it came through a sign-in that isn't set up right leaves why in REQ.sso_problem, for the login
-    page and the log (saying what's missing gives nothing away: the secret itself is never shown)."""
+    """(through the sign-in, username, logged in) from the proxy's headers. The person's headers count only beside the
+    proxy's secret; DEVHUB_SSO_IGNORE_USERS are never people; only members of SSO_GROUP are logged in. A request that
+    looks like it came through a sign-in that isn't set up right logs why once (sso_problem), and the login page says
+    only that it isn't set up right."""
     D.REQ.sso_problem = ""
     got = handler.headers.get(SSO_HEADER) or ""
-    user = (handler.headers.get("Remote-User") or "").strip()
+    user = (handler.headers.get(SSO_USER_HEADER) or "").strip()
     if not SSO_SECRET:
         if got or user:
-            sso_problem("the sign-in sent %s, but NETWATCH_SSO_SECRET isn't set on the hub: load netwatch-sso.env "
-                        "in its compose file (env_file) and recreate the container" % (SSO_HEADER if got else "Remote-User"))
+            sso_problem("the sign-in sent %s, but the hub has no DEVHUB_SSO_SECRET%s (docs/SSO.md)" % (
+                SSO_HEADER if got else SSO_USER_HEADER, ": " + SSO_SECRET_PROBLEM if SSO_SECRET_PROBLEM else ""))
         return False, "", False
     if not hmac.compare_digest(got.encode(), SSO_SECRET.encode()):
         if got:
-            sso_problem("%s doesn't match NETWATCH_SSO_SECRET: the hub has an old netwatch-sso.env (recreate the "
-                        "container) or another stack's" % SSO_HEADER)
+            sso_problem("%s doesn't match DEVHUB_SSO_SECRET: the proxy and the hub have different secrets (the hub "
+                        "reads its settings when its container is made: recreate it after changing them)" % SSO_HEADER)
         elif user:
-            sso_problem("the sign-in sent Remote-User but no %s: switch HEADER on for this service in netwatch "
-                        "(sso_header = on)" % SSO_HEADER)
+            sso_problem("the sign-in sent %s but no %s: the proxy must add the secret header (docs/SSO.md)" % (
+                SSO_USER_HEADER, SSO_HEADER))
         return False, "", False
-    groups = {g.strip() for g in (handler.headers.get("Remote-Groups") or "").split(",") if g.strip()}
+    groups = {g.strip() for g in re.split(r"[,|]", handler.headers.get(SSO_GROUPS_HEADER) or "") if g.strip()}
     if not user:
-        sso_problem("the sign-in passed no Remote-User")
+        sso_problem("the sign-in passed no %s: the proxy must copy it from the sign-in's answer" % SSO_USER_HEADER)
     elif not groups:
-        sso_problem("the sign-in passed no Remote-Groups for %s" % user)
-    return True, user, bool(user) and not user.startswith("svc-") and SSO_GROUP in groups
+        sso_problem("the sign-in passed no %s for %s: the proxy must copy it from the sign-in's answer" % (SSO_GROUPS_HEADER, user))
+    person = bool(user) and not any(fnmatch.fnmatchcase(user, pat) for pat in SSO_IGNORE)
+    return True, user, person and SSO_GROUP in groups
 
 
 def sso_problem(why):
@@ -188,9 +220,18 @@ def sso_problem(why):
 
 
 def cross_site(handler, method):
-    """A browser request made by another site's page (another *.klorti.net name is the same site, so SameSite cookies
+    """A browser request made by another site's page (another name under the same domain is the same site, so SameSite cookies
     and the sign-in still come along): never acts as the user, except to read."""
     return method not in ("GET", "HEAD") and (handler.headers.get("Sec-Fetch-Site") or "") in ("same-site", "cross-site")
+
+
+def header_text(handler, name):
+    """A header's text: http.server decodes headers as Latin-1, a sign-in sends UTF-8 (a name like "Zoë")."""
+    value = (handler.headers.get(name) or "").strip()
+    try:
+        return value.encode("latin-1").decode("utf-8")
+    except UnicodeError:
+        return value
 
 
 def gate(handler, method, path, q, auth):
@@ -199,6 +240,7 @@ def gate(handler, method, path, q, auth):
     logged_in = (sso_in or (not locked and session_ok(handler))) and not cross_site(handler, method)
     D.REQ.ui = logged_in
     D.REQ.sso_user = user if sso_in else ""
+    D.REQ.sso_name = (header_text(handler, SSO_NAME_HEADER) or user) if sso_in else ""
     D.REQ.sso_other = user if via_sso and not sso_in else ""
     if locked and not auth and path not in DEVICE_PATHS and not D.SERVED_RE.match(path):
         if method in ("GET", "HEAD"):
@@ -235,9 +277,8 @@ def login_page(err=""):
 
 
 def login_hint():
-    problem = getattr(D.REQ, "sso_problem", "")
-    if problem:
-        return "Sign-in not set up right: " + problem
+    if getattr(D.REQ, "sso_problem", ""):     # what's wrong goes to the log, never to the page
+        return "The sign-in in front of DeviceHub isn't set up right: the hub's log says why"
     other = getattr(D.REQ, "sso_other", "")
     if other:
         return "Signed in as %s, who isn't in %s%s" % (other, SSO_GROUP, ": log in with the hub's password" if PASSWORD else "")
@@ -532,7 +573,8 @@ def r_state(body, q):
     res = _r_state(body, q)
     with H.lock:
         res["server"] = {"hub": HUB_NAME, "beacons": beacons_public(), "public_url": PUBLIC_URL,
-                         "user": getattr(D.REQ, "sso_user", ""), "logout": SSO_LOGOUT if getattr(D.REQ, "sso_user", "") else ""}
+                         "user": getattr(D.REQ, "sso_user", ""), "name": getattr(D.REQ, "sso_name", ""),
+                         "logout": SSO_LOGOUT if getattr(D.REQ, "sso_user", "") else ""}
     return res
 
 
@@ -638,16 +680,17 @@ def r_beacon_rotate(body, q):
 
 def main():
     if not PASSWORD and not SSO_SECRET:
-        print("devhubsrv: set DEVHUB_PASSWORD (the web page's login) or NETWATCH_SSO_SECRET (a sign-in in front of it); "
+        print("devhubsrv: set DEVHUB_PASSWORD (the web page's login) or DEVHUB_SSO_SECRET (a sign-in in front of it); "
               "refusing to serve the LAN without one")
         raise SystemExit(1)
     os.makedirs(D.DATA, exist_ok=True)
     if SSO_SECRET:
-        log("sign-in: on (%s; %s are logged in)%s%s" % (
-            SSO_HEADER, SSO_GROUP, "; the port sends pages to " + SSO_URL if SSO_URL else "; the port keeps the password login",
+        log("sign-in: on (secret in %s, person in %s/%s; %s are logged in)%s%s" % (
+            SSO_HEADER, SSO_USER_HEADER, SSO_GROUPS_HEADER, SSO_GROUP, "; the port sends pages to " + SSO_URL if SSO_URL else "; the port keeps the password login",
             "" if PUBLIC_URL else "; set DEVHUB_PUBLIC_URL (the LAN address handhelds announce to): beacon downloads need it"))
     else:
-        log("sign-in: off (no NETWATCH_SSO_SECRET)%s" % (": DEVHUB_SSO_URL is ignored" if os.environ.get("DEVHUB_SSO_URL") else ""))
+        log("sign-in: off (%s)%s" % (SSO_SECRET_PROBLEM or "no DEVHUB_SSO_SECRET",
+                                      "; DEVHUB_SSO_URL is ignored" if os.environ.get("DEVHUB_SSO_URL") else ""))
     D.BEACON_KEY = secret_file("beacon.key", 32)
     ensure_hub_key()
     H.beacons = D.load_json("beacons.json", {})

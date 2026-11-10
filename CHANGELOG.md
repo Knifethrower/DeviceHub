@@ -6,17 +6,14 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
-## 1.13.1 (2026-11-10)
-- Sign-in: the log says at startup whether it's on, and a sign-in that isn't set up right says why on the login page
-  (and once in the log): no `NETWATCH_SSO_SECRET` in the container, a secret that doesn't match the proxy's, the proxy
-  not sending `X-Netwatch-Auth` (HEADER off in netwatch), or no `Remote-User`/`Remote-Groups`.
-
-## 1.13.0 (2026-11-10)
-- Server mode behind a sign-in (Authelia forward-auth via Traefik, e.g. netwatch's `sso_header`): signed-in members
-  of `DEVHUB_SSO_GROUP` (`admins`) get the page with no login of its own. The `Remote-*` headers count only beside the
-  proxy's secret (`NETWATCH_SSO_SECRET`), and service keys (`svc-*`) are never people. With `DEVHUB_SSO_URL`, the port
-  serves only devices and agents, and browser pages there go to the signed-in name. `DEVHUB_PASSWORD` is optional
-  behind a sign-in; **Log out** shows who's signed in and goes to `DEVHUB_SSO_LOGOUT`. See docs/SERVER.md.
+## 1.13.0 (2026-11-11)
+- Server mode can use the sign-in in front of it (forward auth: Authelia, Authentik, oauth2-proxy) instead of its own
+  password: signed-in members of `DEVHUB_SSO_GROUP` (`admins`) get the page with no DeviceHub login, and **Log out**
+  shows who and goes to `DEVHUB_SSO_LOGOUT`. The person's headers count only beside a secret the proxy adds
+  (`DEVHUB_SSO_SECRET`, at least 16 characters); `DEVHUB_SSO_IGNORE_USERS` are never people. With `DEVHUB_SSO_URL`,
+  the port serves only devices and agents, and browser pages there go to the signed-in address. Header names can be
+  changed (Authentik's, say). `DEVHUB_PASSWORD` is optional behind a sign-in. The log says whether the sign-in is on and,
+  once each, why it isn't working. The compose file loads `sso.env`. See docs/SSO.md.
 - A request made by another site's page (`Sec-Fetch-Site` same-site or cross-site) can no longer act as the user with
   the page's login: another name under the same domain could otherwise POST with the cookie.
 

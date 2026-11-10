@@ -23,10 +23,7 @@ Open the page, log in, and press **Add device > Download devicehub.zip**. Withou
 | `DEVHUB_PUBLIC_URL` | the URL beacons call (default: the address your browser used when downloading the port) |
 | `DEVHUB_HUB_NAME` | the hub's name on the device's screen and in its SSH key comment |
 | `DEVHUB_BIND`, `DEVHUB_PORT`, `DEVHUB_DATA` | listen address (0.0.0.0), port (8765), data folder |
-| `NETWATCH_SSO_SECRET`, `NETWATCH_SSO_HEADER` | the sign-in proxy's secret and its header (`X-Netwatch-Auth`), from `netwatch-sso.env` |
-| `DEVHUB_SSO_GROUP` | signed-in members of this group are logged in (`admins`) |
-| `DEVHUB_SSO_URL` | the hub's signed-in address, e.g. `https://devicehub.example.net`: the port then serves only devices and agents |
-| `DEVHUB_SSO_LOGOUT` | where **Log out** goes after a sign-in, e.g. `https://auth.example.net/logout` |
+| `DEVHUB_SSO_*` | a sign-in in front of the hub instead of the password: see [SSO.md](SSO.md) |
 | `DEVHUB_LOG_STDERR` | `1` (the image's default): the log (`data/devhubd.log`) also goes to stderr, so `docker logs` shows it |
 
 ## Adding a handheld
@@ -86,36 +83,11 @@ because you ran the port since it booted. When it stops announcing, its card goe
   revoked. Agents on the server itself can keep using `data/token`.
 - Keep it on your LAN (or tailnet): don't publish it to the internet, except through a sign-in (below).
 
-## Behind a sign-in (Authelia)
+## Behind a sign-in
 
-The page can use a sign-in in front of it instead of its own password: Authelia's forward-auth behind Traefik, as
-netwatch sets up with `sso_header = on`. A request through the sign-in carries the person in `Remote-User` and
-`Remote-Groups`, and the proxy's secret in `X-Netwatch-Auth`; the proxy deletes any of these a client sends.
-
-- Those headers count only when `X-Netwatch-Auth` equals `NETWATCH_SSO_SECRET` (a constant-time compare): anything
-  that reaches the port directly could send fake ones. The `Host` header and the client address never decide.
-- A signed-in member of `DEVHUB_SSO_GROUP` (`admins`) is logged in: the page opens with no login, acts as the user,
-  and **Log out** shows their name and goes to `DEVHUB_SSO_LOGOUT`. `svc-*` users (service keys) are never people.
-  Anyone else signed in gets the password login, if `DEVHUB_PASSWORD` is set.
-- With `DEVHUB_SSO_URL` set, the port itself (`http://<server>:8765`) serves only what devices and agents use: the
-  beacon's announces, served files (`/dl/`), `/devhub.py`, `/agent-guide.md` and every API call with a token.
-  Browser pages there get a redirect to the same path on `DEVHUB_SSO_URL`, and a password login there doesn't count.
-  Unset it to get the password login back on the port (if the sign-in is down, say).
-- Set `DEVHUB_PUBLIC_URL` to the LAN address: the beacon port downloaded through the sign-in has to announce to the
-  port, not to the signed-in name.
-- A request another site's page makes (`Sec-Fetch-Site: same-site` or `cross-site`) never acts as the user, except
-  to read. Other names under the same domain are the same site, so the sign-in and the cookie would come along.
-
-With netwatch: `sso_header = on` and `direct = open` on the hub's service, then `netwatch-sso.env` (written next to
-the stack's `netwatch.cfg`) next to `compose.yaml` and, in `.env`:
-
-```bash
-DEVHUB_PUBLIC_URL=http://192.168.1.10:8765
-DEVHUB_SSO_URL=https://devicehub.example.net
-DEVHUB_SSO_LOGOUT=https://auth.example.net/logout
-```
-
-The compose file loads `netwatch-sso.env` when it's there (Docker Compose 2.24 or newer, for `required: false`).
+The page can use the sign-in you have in front of your other services (Authelia, Authentik, oauth2-proxy...) instead
+of its own password: members of one group are logged in, and the port itself then serves only devices and agents.
+[SSO.md](SSO.md) has what the proxy must do, DeviceHub's `DEVHUB_SSO_*` settings, and recipes.
 
 ## Tests
 

@@ -744,7 +744,7 @@ function lockBox(d) {
 function render() {
   $("#logoutbtn").hidden = !S.server;
   if (S.server) {
-    $("#logoutbtn").textContent = S.server.user ? "Log out " + S.server.user : "Log out";
+    $("#logoutbtn").textContent = S.server.user ? "Log out " + (S.server.name || S.server.user) : "Log out";
     $("#logoutbtn").title = S.server.user ? "signed in as " + S.server.user : "";
   }
   if (S.server && $("#bcndlg").open) renderBeacons();

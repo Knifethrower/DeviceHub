@@ -1,13 +1,13 @@
 #!/bin/sh
-# Server mode behind a sign-in proxy (Authelia forward-auth, netwatch's sso_header): the Remote-* headers count only
-# with the proxy's secret, only the admins group is logged in, and with DEVHUB_SSO_URL the port serves only devices and
-# agents. Needs python3 and curl.
+# Server mode behind a sign-in proxy (docs/SSO.md): the person's headers count only beside the proxy's secret, only
+# DEVHUB_SSO_GROUP is logged in, and with DEVHUB_SSO_URL the port serves only devices and agents; the header names and
+# where the secret comes from can be changed. Needs python3 and curl.
 #   tests/sso_smoke.sh
 set -e
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 PY=${PYTHON:-python3}
 T=$(mktemp -d)
-unset DEVHUB_URL DEVHUB_TOKEN DEVHUB_SESSION DEVHUB_PASSWORD DEVHUB_SSO_URL DEVHUB_SSO_LOGOUT DEVHUB_SSO_GROUP NETWATCH_SSO_HEADER
+for v in $(env | sed -n 's/^\(DEVHUB_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done   # the caller's hub and settings
 free_port() { "$PY" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 PIDS=
 cleanup() { for p in $PIDS; do kill "$p" 2>/dev/null || true; done; rm -rf "$T"; }
@@ -19,13 +19,14 @@ SECRET=0123456789abcdef0123456789abcdef
 start_hub() {   # name port [VAR=value...]
     n=$1; p=$2; shift 2
     env DEVHUB_PORT=$p DEVHUB_FILE_PORT=$(free_port) DEVHUB_DATA=$T/$n DEVHUB_NO_AUTOSTART=1 DEVHUB_BIND=127.0.0.1 \
-        DEVHUB_PUBLIC_URL=http://127.0.0.1:$p NETWATCH_SSO_SECRET=$SECRET "$@" "$PY" "$HERE/devhubsrv.py" > "$T/$n.out" 2>&1 &
+        DEVHUB_PUBLIC_URL=http://127.0.0.1:$p DEVHUB_SSO_SECRET=$SECRET DEVHUB_SSO_IGNORE_USERS="svc-* bot-*" "$@" \
+        "$PY" "$HERE/devhubsrv.py" > "$T/$n.out" 2>&1 &
     PIDS="$PIDS $!"
     for i in $(seq 40); do curl -fs "http://127.0.0.1:$p/api/ping" >/dev/null 2>&1 && return; sleep 0.5; done
     cat "$T/$n.out"; fail "hub $n did not start"
 }
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
-ADMIN="-H X-Netwatch-Auth:$SECRET -H Remote-User:klops -H Remote-Groups:family,admins"
+ADMIN="-H X-DevHub-SSO:$SECRET -H Remote-User:klops -H Remote-Groups:family,admins"
 
 # --- hub A: no password, a signed-in address: the port is for devices and agents only
 A=$(free_port)
@@ -44,13 +45,18 @@ loc=$(curl -s -o /dev/null -w '%{redirect_url}' "$U/proxy/wiki/a%20b?x=1&y=2")
 ok "the port: devices and agents only"
 
 [ "$(code -H Remote-User:klops -H Remote-Groups:admins "$U/api/state")" = 401 ] || fail "made-up Remote-User without the secret"
-[ "$(code -H X-Netwatch-Auth:wrong -H Remote-User:klops -H Remote-Groups:admins "$U/api/state")" = 401 ] || fail "a wrong secret"
-[ "$(code -H X-Netwatch-Auth:wrong -H Remote-User:klops -H Remote-Groups:admins "$U/")" = 302 ] || fail "a wrong secret's page"
-ok "Remote-* only with the secret"
+[ "$(code -H X-DevHub-SSO:wrong -H Remote-User:klops -H Remote-Groups:admins "$U/api/state")" = 401 ] || fail "a wrong secret"
+[ "$(code -H X-DevHub-SSO:wrong -H Remote-User:klops -H Remote-Groups:admins "$U/")" = 302 ] || fail "a wrong secret's page"
+ok "the person's headers only with the secret"
 
 [ "$(code $ADMIN "$U/")" = 200 ] || fail "an admin's page"
-curl -s $ADMIN "$U/api/state" | "$PY" -c 'import json, sys; s = json.load(sys.stdin)["server"]; assert s["user"] == "klops" and s["logout"] == "https://auth.example.net/logout", s' ||
+curl -s $ADMIN -H "Remote-Name: Zoë" "$U/api/state" | "$PY" -c '
+import json, sys
+s = json.load(sys.stdin)["server"]
+assert (s["user"], s["name"], s["logout"]) == ("klops", "Zoë", "https://auth.example.net/logout"), s' ||
     fail "the page doesn't know who signed in"
+curl -s $ADMIN "$U/api/state" | "$PY" -c 'import json, sys; assert json.load(sys.stdin)["server"]["name"] == "klops"' ||
+    fail "no name: the username"
 curl -s $ADMIN -X PUT -d '{"client":"ui","settings":{"away_mode":true}}' "$U/api/settings" | grep -q '"ok": true' || fail "an admin acts as the user"
 [ "$(code $ADMIN "$U/login")" = 303 ] || fail "/login for a signed-in admin"
 curl -s $ADMIN -H "Sec-Fetch-Site: same-site" -X PUT -d '{"client":"ui","settings":{"away_mode":false}}' "$U/api/settings" |
@@ -59,13 +65,14 @@ curl -s $ADMIN -H "Sec-Fetch-Site: same-origin" -X PUT -d '{"client":"ui","setti
     grep -q '"ok": true' || fail "the page itself (same-origin)"
 ok "admins are logged in"
 
-FAMILY="-H X-Netwatch-Auth:$SECRET -H Remote-User:kid -H Remote-Groups:family"
+FAMILY="-H X-DevHub-SSO:$SECRET -H Remote-User:kid -H Remote-Groups:family"
 [ "$(code $FAMILY "$U/")" = 302 ] || fail "a signed-in non-admin's page"
 curl -s $FAMILY "$U/login" | grep -q "Signed in as kid, who isn&#x27;t in admins" || fail "the login page doesn't say why"
 curl -s $FAMILY -X PUT -d '{"client":"ui","settings":{"away_mode":true}}' "$U/api/settings" | grep -q "log in" || fail "a non-admin acted as the user"
-[ "$(code -H X-Netwatch-Auth:$SECRET -H Remote-User:svc-tavern -H Remote-Groups:admins,services "$U/")" = 302 ] ||
+[ "$(code -H X-DevHub-SSO:$SECRET -H Remote-User:svc-tavern -H Remote-Groups:admins,services "$U/")" = 302 ] ||
     fail "a service key is a person"
-[ "$(code -H X-Netwatch-Auth:$SECRET -H Remote-Groups:admins "$U/")" = 302 ] || fail "admins without a user"
+[ "$(code -H X-DevHub-SSO:$SECRET -H Remote-User:bot-x -H Remote-Groups:admins "$U/")" = 302 ] || fail "the second ignore pattern"
+[ "$(code -H X-DevHub-SSO:$SECRET -H Remote-Groups:admins "$U/")" = 302 ] || fail "admins without a user"
 ok "nobody else"
 
 # --- hub B: a password too, no signed-in address: the port keeps the password login, the sign-in works beside it
@@ -79,26 +86,54 @@ $C -X PUT -d '{"client":"ui","settings":{"away_mode":true}}' "$U/api/settings" |
 $C -H "Sec-Fetch-Site: cross-site" -X PUT -d '{"client":"ui","settings":{"away_mode":true}}' "$U/api/settings" | grep -q "log in" ||
     fail "another site's page used the session"
 [ "$(code $ADMIN "$U/")" = 302 ] || fail "DEVHUB_SSO_GROUP=hub let admins in"
-[ "$(code -H X-Netwatch-Auth:$SECRET -H Remote-User:klops -H Remote-Groups:hub "$U/")" = 200 ] || fail "DEVHUB_SSO_GROUP"
+[ "$(code -H X-DevHub-SSO:$SECRET -H Remote-User:klops -H Remote-Groups:hub "$U/")" = 200 ] || fail "DEVHUB_SSO_GROUP"
 ok "password beside the sign-in, DEVHUB_SSO_GROUP"
 
-# --- a sign-in that isn't set up right says why, on the login page and once in the log
-curl -s -H X-Netwatch-Auth:stale -H Remote-User:klops "$U/login" | grep -q "doesn&#x27;t match NETWATCH_SSO_SECRET" || fail "a stale secret isn't explained"
-curl -s -H Remote-User:klops -H Remote-Groups:admins "$U/login" | grep -q "switch HEADER on" || fail "a missing header isn't explained"
-curl -s -H X-Netwatch-Auth:$SECRET -H Remote-User:klops "$U/login" | grep -q "no Remote-Groups for klops" || fail "missing groups aren't explained"
-grep -q "sign-in: on (X-Netwatch-Auth; hub are logged in); the port keeps the password login" "$T/b/devhubd.log" || fail "startup doesn't say the sign-in is on"
-[ "$(grep -c "doesn't match NETWATCH_SSO_SECRET" "$T/b/devhubd.log")" = 1 ] || fail "the problem isn't logged once"
+# --- a sign-in that isn't set up right: the log says why (once), the page only that it isn't
+for h in "-H X-DevHub-SSO:stale -H Remote-User:klops" "-H Remote-User:klops -H Remote-Groups:admins" "-H X-DevHub-SSO:$SECRET -H Remote-User:klops"; do
+    page=$(curl -s $h "$U/login")
+    echo "$page" | grep -q "isn&#x27;t set up right: the hub&#x27;s log says why" || fail "the page doesn't say it isn't set up ($h)"
+    echo "$page" | grep -q "DEVHUB_SSO_SECRET\|X-DevHub-SSO" && fail "the page shows the setup's details ($h)"
+done
+curl -s -H X-DevHub-SSO:stale -H Remote-User:klops "$U/login" > /dev/null
+grep -q "sign-in: on (secret in X-DevHub-SSO, person in Remote-User/Remote-Groups; hub are logged in); the port keeps the password login" "$T/b/devhubd.log" ||
+    fail "startup doesn't say the sign-in is on"
+[ "$(grep -c "X-DevHub-SSO doesn't match DEVHUB_SSO_SECRET" "$T/b/devhubd.log")" = 1 ] || fail "a stale secret isn't logged, once"
+grep -q "the sign-in sent Remote-User but no X-DevHub-SSO: the proxy must add the secret header" "$T/b/devhubd.log" || fail "a missing header isn't logged"
+grep -q "the sign-in passed no Remote-Groups for klops" "$T/b/devhubd.log" || fail "missing groups aren't logged"
 D=$(free_port)
-start_hub d "$D" NETWATCH_SSO_SECRET= DEVHUB_PASSWORD=pw DEVHUB_SSO_URL=https://x.example.net
-curl -s -H X-Netwatch-Auth:whatever -H Remote-User:klops "http://127.0.0.1:$D/login" | grep -q "NETWATCH_SSO_SECRET isn&#x27;t set on the hub" ||
-    fail "a missing secret isn't explained"
-grep -q "sign-in: off (no NETWATCH_SSO_SECRET): DEVHUB_SSO_URL is ignored" "$T/d/devhubd.log" || fail "startup doesn't say the sign-in is off"
-[ "$(code "http://127.0.0.1:$D/")" = 302 ] && [ "$(curl -s -o /dev/null -w '%{redirect_url}' "http://127.0.0.1:$D/")" = "http://127.0.0.1:$D/login" ] ||
+start_hub d "$D" DEVHUB_SSO_SECRET= DEVHUB_PASSWORD=pw DEVHUB_SSO_URL=https://x.example.net
+curl -s -H X-DevHub-SSO:whatever -H Remote-User:klops "http://127.0.0.1:$D/login" | grep -q "isn&#x27;t set up right" || fail "no secret: the page"
+grep -q "the sign-in sent X-DevHub-SSO, but the hub has no DEVHUB_SSO_SECRET" "$T/d/devhubd.log" || fail "no secret isn't logged"
+grep -q "sign-in: off (no DEVHUB_SSO_SECRET); DEVHUB_SSO_URL is ignored" "$T/d/devhubd.log" || fail "startup doesn't say the sign-in is off"
+[ "$(curl -s -o /dev/null -w '%{redirect_url}' "http://127.0.0.1:$D/")" = "http://127.0.0.1:$D/login" ] ||
     fail "no secret: DEVHUB_SSO_URL must not lock the port"
-ok "a sign-in that isn't set up right says why"
+E=$(free_port)
+start_hub e "$E" DEVHUB_SSO_SECRET=short DEVHUB_PASSWORD=pw
+[ "$(code -H X-DevHub-SSO:short -H Remote-User:klops -H Remote-Groups:admins "http://127.0.0.1:$E/")" = 302 ] || fail "a short secret is used"
+grep -q "sign-in: off (the secret is shorter than 16 characters: ignored)" "$T/e/devhubd.log" || fail "a short secret isn't logged"
+ok "a sign-in that isn't set up right: logged, not shown"
+
+# --- another proxy's names (Authentik's headers, groups split by |), a secret from a file
+F=$(free_port)
+echo "  $SECRET-from-a-file  " > "$T/secret"
+start_hub f "$F" DEVHUB_SSO_SECRET= DEVHUB_SSO_SECRET_FILE="$T/secret" DEVHUB_SSO_SECRET_HEADER=X-Proxy-Auth \
+    DEVHUB_SSO_USER_HEADER=X-authentik-username DEVHUB_SSO_GROUPS_HEADER=X-authentik-groups \
+    DEVHUB_SSO_NAME_HEADER=X-authentik-name DEVHUB_SSO_GROUP="authentik Admins"
+U=http://127.0.0.1:$F
+AUTHENTIK="-H X-authentik-username:klops -H X-authentik-name:Klops"
+[ "$(code -H "X-Proxy-Auth: $SECRET-from-a-file" $AUTHENTIK -H "X-authentik-groups: family|authentik Admins" "$U/")" = 200 ] ||
+    fail "a secret file, another header, other user/group headers"
+curl -s -H "X-Proxy-Auth: $SECRET-from-a-file" $AUTHENTIK -H "X-authentik-groups: authentik Admins" "$U/api/state" |
+    "$PY" -c 'import json, sys; assert json.load(sys.stdin)["server"]["name"] == "Klops"' || fail "another name header"
+[ "$(code -H "X-DevHub-SSO: $SECRET-from-a-file" $AUTHENTIK -H "X-authentik-groups: authentik Admins" "$U/")" = 302 ] ||
+    fail "the default secret header still counts"
+[ "$(code -H "X-Proxy-Auth: $SECRET-from-a-file" -H "Remote-User: klops" -H "Remote-Groups: authentik Admins" "$U/")" = 302 ] ||
+    fail "the default person headers still count"
+ok "another proxy's headers, a secret file"
 
 # --- neither a password nor a secret: refuses to start
-if env -u NETWATCH_SSO_SECRET DEVHUB_PORT=$(free_port) DEVHUB_DATA=$T/c DEVHUB_NO_AUTOSTART=1 timeout 10 "$PY" "$HERE/devhubsrv.py" > "$T/c.out" 2>&1; then
+if env DEVHUB_PORT=$(free_port) DEVHUB_DATA=$T/c DEVHUB_NO_AUTOSTART=1 timeout 10 "$PY" "$HERE/devhubsrv.py" > "$T/c.out" 2>&1; then
     fail "started without a password or a sign-in"
 fi
 grep -q "refusing to serve" "$T/c.out" || fail "no reason given"
