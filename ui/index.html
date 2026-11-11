@@ -164,7 +164,10 @@ fieldset legend { font-weight: 600; font-size: 13px; padding: 0; margin-bottom: 
 #snack { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--text); color: var(--bg);
   padding: 9px 14px; border-radius: 9px; font-size: 13.5px; max-width: min(640px, calc(100vw - 32px)); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 50; }
 #snack.on { opacity: 1; }
+#snack[popover] { inset: auto; left: 50%; bottom: 22px; margin: 0; border: 0; overflow: visible; }
 #snack.bad { background: var(--bad); color: #fff; }
+#ederr { margin: 0 16px 10px; padding: 8px 12px; border-radius: 8px; background: var(--bad); color: #fff; font-size: 13.5px; }
+#edbody .badf { outline: 2px solid var(--bad); outline-offset: 1px; }
 .job { margin: 10px 14px 0; padding: 8px 10px; border-radius: 9px; font-size: 12.5px; background: var(--panel2); border: 1px solid var(--line); }
 .job.done { background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
 .job.failed { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
@@ -241,6 +244,7 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
 <dialog id="ed"><form method="dialog" id="edform">
   <div class="dh"><h2 id="edtitle">Device</h2><span class="spacer"></span><button type="button" class="small" data-close>Close</button></div>
   <div class="db" id="edbody"></div>
+  <div id="ederr" role="alert" hidden></div>
   <div class="df">
     <button type="button" class="danger" id="eddelete">Delete device</button>
     <span class="spacer"></span>
@@ -530,7 +534,7 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
   </div>
 </form></dialog>
 
-<div id="snack"></div>
+<div id="snack" popover="manual"></div>
 
 <script>
 "use strict";
@@ -577,6 +581,8 @@ function updur(s) { const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 
 let snackT;
 function snack(text, bad) {
   const el = $("#snack"); el.textContent = text; el.className = "on" + (bad ? " bad" : "");
+  // open dialogs sit in the browser's top layer; showing the message as a popover puts it above them
+  if (el.showPopover) { try { if (el.matches(":popover-open")) el.hidePopover(); el.showPopover(); } catch (e) {} }
   clearTimeout(snackT); snackT = setTimeout(() => el.className = "", bad ? 7000 : 3500);
 }
 async function copy(text) {
@@ -2640,6 +2646,7 @@ const DEFAULTS = { port: 22, user: "root", auth: "password", cfw: "Knulli", guar
 
 function openEditor(d) {
   editing = d ? d.id : null; edDev = d;
+  edErr("");
   const v = Object.assign({}, DEFAULTS, d || {});
   if (!d) applyPreset(v, v.cfw, null);
   // card profiles: a device without any is edited as one implicit card
@@ -2822,24 +2829,40 @@ $("#edform").addEventListener("submit", async e => {
   e.preventDefault();
   const v = stashCard();
   const unpicked = edCards.findIndex(c => !c.cfw);
-  if (unpicked >= 0) { edIdx = unpicked; renderEditor(v); return snack("Pick a CFW for the new card profile", true); }
+  if (unpicked >= 0) {
+    edIdx = unpicked; renderEditor(v);
+    edErr("Not saved: pick a CFW for the new card profile");
+    $("#f_cfw").classList.add("badf"); $("#f_cfw").focus();
+    return;
+  }
   const withCards = edCards.length > 1 || (edDev && edDev.cards && edDev.cards.length);
   if (withCards) {
     v.cards = edCards.map(c => Object.assign({ id: c.id, label: c.label }, Object.fromEntries(CARD_KEYS.map(k => [k, c[k]]))));
     if (edDev && edDev.card) v.card = edDev.card;
   }
   const j = editing ? await api("PUT", `/api/devices/${editing}`, { device: v }) : await api("POST", "/api/devices", { device: v });
-  if (j.ok === false) return snack(j.error, true);
+  if (j.ok === false) return edErr("Not saved: " + (j.error || j.msg || "DeviceHub gave no reason"));
+  edErr("");
   // passwords typed for any card profile (the saved device lists the cards in the same order)
   for (const [i, c] of edCards.entries()) {
     if (!c._pw) continue;
     snack(`Encrypting the password${withCards ? " for the " + c.label + " card" : ""}…`);
     const card = withCards && j.device.cards[i] ? { card: j.device.cards[i].id } : {};
     const p = await api("POST", `/api/devices/${j.device.id}/password`, Object.assign({ password: c._pw }, card));
-    if (p.ok === false) return snack("Device saved, password NOT saved: " + p.error, true);
+    if (p.ok === false) return edErr("Device saved, password NOT saved: " + (p.error || "no reason given"));
   }
   $("#ed").close(); snack(editing ? "Saved" : "Device added"); refresh();
 });
+// a save that failed: say why at the bottom of the editor, and point at the field it is about
+function edErr(msg) {
+  const el = $("#ederr");
+  el.textContent = msg; el.hidden = !msg;
+  document.querySelectorAll("#edbody .badf").forEach(x => x.classList.remove("badf"));
+  if (!msg) return;
+  const m = /\bid\b/.test(msg) && !/card id/.test(msg) ? ["", "id"] : /(?:^|: )([a-z_]+)(?::| must| is)/.exec(msg.replace(/^(Not saved|Device saved[^:]*): /, ""));
+  const f = m && $("#f_" + m[1]);
+  if (f) { f.classList.add("badf"); f.scrollIntoView({ block: "center" }); f.focus(); } else el.scrollIntoView({ block: "nearest" });
+}
 $("#eddelete").onclick = async () => {
   if (!editing || !confirm(`Delete ${editing} and its saved password?`)) return;
   const j = await api("DELETE", `/api/devices/${editing}`);

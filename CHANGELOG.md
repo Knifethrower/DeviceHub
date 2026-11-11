@@ -6,6 +6,11 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.13.1 (2026-11-10)
+- The device editor says why a save failed, in a red line above Save, and highlights the field it is about
+  (duplicate id, missing IP address, bad user name, no CFW picked, ...). Messages used to appear behind the open
+  window, so a refused save looked like nothing happened. Messages now show above every open window.
+
 ## 1.13.0 (2026-11-09)
 - Hold limit: an agent that has held a device for 60 minutes (setting, 0 = off) can't extend its lease while others
   wait, so one long session can't starve the line. It keeps the lock until it releases; a running `--watch` job and
