@@ -749,6 +749,10 @@ function lockBox(d) {
 
 function render() {
   $("#logoutbtn").hidden = !S.server;
+  if (S.server) {
+    $("#logoutbtn").textContent = S.server.user ? "Log out " + (S.server.name || S.server.user) : "Log out";
+    $("#logoutbtn").title = S.server.user ? "signed in as " + S.server.user : "";
+  }
   if (S.server && $("#bcndlg").open) renderBeacons();
   const away = !!(S.settings && S.settings.away_mode), ab = $("#awaybtn");
   ab.textContent = away ? "Away mode: ON" : "Away mode";
@@ -2910,7 +2914,10 @@ $("#bcnbody").addEventListener("click", async e => {
   if (!confirm("Make a new beacon key? Every beacon port downloaded so far stops working until you download and copy the new one.")) return;
   await act(api("POST", "/api/beacon/rotate", {}), "New beacon key: download the port again");
 });
-$("#logoutbtn").onclick = async () => { await fetch("/logout", { method: "POST", headers: { "X-DevHub-Token": TOKEN } }); location.href = "/login"; };
+$("#logoutbtn").onclick = async () => {
+  await fetch("/logout", { method: "POST", headers: { "X-DevHub-Token": TOKEN } });
+  location.href = (S && S.server && S.server.logout) || "/login";
+};
 
 // ------------------------------------------------------------ agents: tokens for agents on other machines
 let agNew = null;   // the token just made: shown once

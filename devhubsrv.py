@@ -7,16 +7,31 @@ On top of it:
     the hub's beacon key. New ones wait for your approval; approved ones get the hub's SSH key in their
     authorized_keys and the hub connects back to them. Their SSH host keys come signed in the announce and are
     pinned, and an IP change from DHCP follows the device by itself.
-  - Login: the web page needs DEVHUB_PASSWORD; only a logged-in page acts as the user (approvals, settings, Away
-    mode). Agents use the API token (X-DevHub-Token), as before.
+  - Login: the web page needs DEVHUB_PASSWORD, or a sign-in in front of the hub (see below); only a logged-in page
+    acts as the user (approvals, settings, Away mode). Agents use the API token (X-DevHub-Token), as before.
+  - Sign-in in front of the hub (a reverse proxy with forward auth: Authelia, Authentik, oauth2-proxy...): requests
+    through the proxy carry the person in headers (Remote-User/Remote-Groups) and a secret the proxy adds. Those
+    headers count only when the secret matches DEVHUB_SSO_SECRET (anything reaching the port directly can send fake
+    ones); then members of DEVHUB_SSO_GROUP are logged in. With DEVHUB_SSO_URL set, the port itself serves only the
+    handhelds' and agents' API: browser pages there are sent to the signed-in address, and a password login there
+    doesn't count. docs/SSO.md: what a proxy has to do, and the setup for some.
   - It listens on DEVHUB_BIND (0.0.0.0) instead of loopback only.
 
 Environment (besides devhubd's DEVHUB_PORT/DEVHUB_DATA):
-  DEVHUB_PASSWORD     the web page's login password (required)
+  DEVHUB_PASSWORD     the web page's login password (required unless DEVHUB_SSO_SECRET is set)
+  DEVHUB_SSO_SECRET   the secret the sign-in proxy adds to every signed-in request, 16 characters or more (or
+                      DEVHUB_SSO_SECRET_FILE: a file holding it, e.g. a Docker secret)
+  DEVHUB_SSO_SECRET_HEADER  the header it comes in (default X-DevHub-SSO)
+  DEVHUB_SSO_USER_HEADER, DEVHUB_SSO_GROUPS_HEADER, DEVHUB_SSO_NAME_HEADER  the person's headers (default Remote-User,
+                      Remote-Groups: comma or | separated, Remote-Name: shown on the page)
+  DEVHUB_SSO_GROUP    the group whose signed-in members are logged in (default: admins)
+  DEVHUB_SSO_IGNORE_USERS  users that are never people (scripts' keys), space-separated patterns, e.g. svc-*
+  DEVHUB_SSO_URL      the hub's signed-in address, e.g. https://devicehub.example.net: browser pages on the port go there
+  DEVHUB_SSO_LOGOUT   where Log out goes after a sign-in, e.g. https://auth.example.net/logout
   DEVHUB_PUBLIC_URL   the URL handhelds announce to, e.g. http://192.168.68.133:8765 (default: what the browser used)
   DEVHUB_HUB_NAME     the hub's name in the beacon's messages (default: DeviceHub)
 """
-import hashlib, hmac, html, io, json, os, re, secrets, subprocess, threading, time, urllib.parse, zipfile
+import fnmatch, hashlib, hmac, html, io, json, os, re, secrets, subprocess, threading, time, urllib.parse, zipfile
 
 os.environ.setdefault("DEVHUB_BIND", "0.0.0.0")
 os.environ.setdefault("DEVHUB_PLATFORM", "linux")
@@ -26,9 +41,42 @@ from devhubd import H, ApiError, route, now, event, alert, log   # noqa: E402
 PASSWORD = os.environ.get("DEVHUB_PASSWORD") or ""
 PUBLIC_URL = (os.environ.get("DEVHUB_PUBLIC_URL") or "").rstrip("/")
 HUB_NAME = os.environ.get("DEVHUB_HUB_NAME") or "DeviceHub"
+
+
+def setting(name):
+    return (os.environ.get(name) or "").strip()
+
+
+def sso_secret():
+    """(the secret, why there's none): DEVHUB_SSO_SECRET, else the file DEVHUB_SSO_SECRET_FILE names."""
+    if setting("DEVHUB_SSO_SECRET"):
+        return setting("DEVHUB_SSO_SECRET"), ""
+    path = setting("DEVHUB_SSO_SECRET_FILE")
+    if not path:
+        return "", ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip(), ""
+    except OSError as e:
+        return "", "can't read DEVHUB_SSO_SECRET_FILE: %s" % e
+
+
+SSO_SECRET, SSO_SECRET_PROBLEM = sso_secret()
+if SSO_SECRET and len(SSO_SECRET) < 16:
+    SSO_SECRET, SSO_SECRET_PROBLEM = "", "the secret is shorter than 16 characters: ignored"
+SSO_HEADER = setting("DEVHUB_SSO_SECRET_HEADER") or "X-DevHub-SSO"
+SSO_USER_HEADER = setting("DEVHUB_SSO_USER_HEADER") or "Remote-User"
+SSO_GROUPS_HEADER = setting("DEVHUB_SSO_GROUPS_HEADER") or "Remote-Groups"
+SSO_NAME_HEADER = setting("DEVHUB_SSO_NAME_HEADER") or "Remote-Name"
+SSO_GROUP = setting("DEVHUB_SSO_GROUP") or "admins"
+SSO_IGNORE = setting("DEVHUB_SSO_IGNORE_USERS").split()
+SSO_URL = setting("DEVHUB_SSO_URL").rstrip("/") if SSO_SECRET else ""
+SSO_LOGOUT = setting("DEVHUB_SSO_LOGOUT")
 SESSION_DAYS = 30
 BEACON_DIR = os.path.join(D.HERE, "beacon")
 OPEN_PATHS = {"/api/ping", "/api/beacon/hello", "/api/beacon", "/login", "/sw.js"}
+# what devices and agents fetch from the port without a token; with DEVHUB_SSO_URL every other open path is a page
+DEVICE_PATHS = {"/api/ping", "/api/beacon/hello", "/api/beacon", "/devhub.py", "/agent-guide.md"}
 
 D.DEFAULT_SETTINGS["beacon_auto_approve"] = False   # new handhelds join without asking (trusted LAN)
 D.DEFAULT_SETTINGS["poll_devices"] = False          # probe every device and connect when it answers, like local DeviceHub
@@ -37,6 +85,7 @@ for _k in ("beacon_auto_approve", "poll_devices"):
 H.beacons = {}      # beacon id -> record (beacons.json)
 H.nonces = {}       # nonce -> expiry
 H.login_fails = []
+H.sso_logged = set()
 
 
 def secret_file(name, nbytes):
@@ -133,9 +182,71 @@ def session_ok(handler):
     return False
 
 
+def sso(handler):
+    """(through the sign-in, username, logged in) from the proxy's headers. The person's headers count only beside the
+    proxy's secret; DEVHUB_SSO_IGNORE_USERS are never people; only members of SSO_GROUP are logged in. A request that
+    looks like it came through a sign-in that isn't set up right logs why once (sso_problem), and the login page says
+    only that it isn't set up right."""
+    D.REQ.sso_problem = ""
+    got = handler.headers.get(SSO_HEADER) or ""
+    user = (handler.headers.get(SSO_USER_HEADER) or "").strip()
+    if not SSO_SECRET:
+        if got or user:
+            sso_problem("the sign-in sent %s, but the hub has no DEVHUB_SSO_SECRET%s (docs/SSO.md)" % (
+                SSO_HEADER if got else SSO_USER_HEADER, ": " + SSO_SECRET_PROBLEM if SSO_SECRET_PROBLEM else ""))
+        return False, "", False
+    if not hmac.compare_digest(got.encode(), SSO_SECRET.encode()):
+        if got:
+            sso_problem("%s doesn't match DEVHUB_SSO_SECRET: the proxy and the hub have different secrets (the hub "
+                        "reads its settings when its container is made: recreate it after changing them)" % SSO_HEADER)
+        elif user:
+            sso_problem("the sign-in sent %s but no %s: the proxy must add the secret header (docs/SSO.md)" % (
+                SSO_USER_HEADER, SSO_HEADER))
+        return False, "", False
+    groups = {g.strip() for g in re.split(r"[,|]", handler.headers.get(SSO_GROUPS_HEADER) or "") if g.strip()}
+    if not user:
+        sso_problem("the sign-in passed no %s: the proxy must copy it from the sign-in's answer" % SSO_USER_HEADER)
+    elif not groups:
+        sso_problem("the sign-in passed no %s for %s: the proxy must copy it from the sign-in's answer" % (SSO_GROUPS_HEADER, user))
+    person = bool(user) and not any(fnmatch.fnmatchcase(user, pat) for pat in SSO_IGNORE)
+    return True, user, person and SSO_GROUP in groups
+
+
+def sso_problem(why):
+    D.REQ.sso_problem = why
+    if why not in H.sso_logged:     # once per kind of problem, not per request
+        H.sso_logged.add(why)
+        log("sign-in:", why)
+
+
+def cross_site(handler, method):
+    """A browser request made by another site's page (another name under the same domain is the same site, so SameSite cookies
+    and the sign-in still come along): never acts as the user, except to read."""
+    return method not in ("GET", "HEAD") and (handler.headers.get("Sec-Fetch-Site") or "") in ("same-site", "cross-site")
+
+
+def header_text(handler, name):
+    """A header's text: http.server decodes headers as Latin-1, a sign-in sends UTF-8 (a name like "Zoë")."""
+    value = (handler.headers.get(name) or "").strip()
+    try:
+        return value.encode("latin-1").decode("utf-8")
+    except UnicodeError:
+        return value
+
+
 def gate(handler, method, path, q, auth):
-    logged_in = session_ok(handler)
+    via_sso, user, sso_in = sso(handler)
+    locked = bool(SSO_URL) and not via_sso     # the port itself, while the hub has a signed-in address
+    logged_in = (sso_in or (not locked and session_ok(handler))) and not cross_site(handler, method)
     D.REQ.ui = logged_in
+    D.REQ.sso_user = user if sso_in else ""
+    D.REQ.sso_name = (header_text(handler, SSO_NAME_HEADER) or user) if sso_in else ""
+    D.REQ.sso_other = user if via_sso and not sso_in else ""
+    if locked and not auth and path not in DEVICE_PATHS and not D.SERVED_RE.match(path):
+        if method in ("GET", "HEAD"):
+            u = urllib.parse.urlsplit(handler.path)
+            return (302, "text/plain", b"", {"Location": SSO_URL + u.path + ("?" + u.query if u.query else "")})
+        raise ApiError(403, "sign in at %s" % SSO_URL)
     if path in OPEN_PATHS:
         return None
     if path == "/" and not logged_in:
@@ -165,9 +276,20 @@ def login_page(err=""):
     return ("text/html; charset=utf-8", body.encode())
 
 
+def login_hint():
+    if getattr(D.REQ, "sso_problem", ""):     # what's wrong goes to the log, never to the page
+        return "The sign-in in front of DeviceHub isn't set up right: the hub's log says why"
+    other = getattr(D.REQ, "sso_other", "")
+    if other:
+        return "Signed in as %s, who isn't in %s%s" % (other, SSO_GROUP, ": log in with the hub's password" if PASSWORD else "")
+    return "" if PASSWORD else "DEVHUB_PASSWORD is not set on the server: nobody can log in here"
+
+
 @route("GET", "/login", auth=False)
 def r_login_page(body, q):
-    return login_page("" if PASSWORD else "DEVHUB_PASSWORD is not set on the server: nobody can log in")
+    if D.REQ.ui:
+        return redirect("/")
+    return login_page(login_hint())
 
 
 @route("POST", "/login", auth=False, raw=True)
@@ -177,6 +299,8 @@ def r_login(h, q):
     H.login_fails[:] = [t for t in H.login_fails if now() - t < 60]
     if len(H.login_fails) >= 10:
         return login_page("Too many tries: wait a minute")
+    if cross_site(h, "POST"):
+        return login_page("Log in from this page")
     if not PASSWORD or not hmac.compare_digest((form.get("password") or [""])[0].encode(), PASSWORD.encode()):
         H.login_fails.append(now())
         return login_page("Wrong password")
@@ -448,7 +572,9 @@ _r_state = next(fn for m, rx, fn, a, raw in D.ROUTES if m == "GET" and rx.patter
 def r_state(body, q):
     res = _r_state(body, q)
     with H.lock:
-        res["server"] = {"hub": HUB_NAME, "beacons": beacons_public(), "public_url": PUBLIC_URL}
+        res["server"] = {"hub": HUB_NAME, "beacons": beacons_public(), "public_url": PUBLIC_URL,
+                         "user": getattr(D.REQ, "sso_user", ""), "name": getattr(D.REQ, "sso_name", ""),
+                         "logout": SSO_LOGOUT if getattr(D.REQ, "sso_user", "") else ""}
     return res
 
 
@@ -515,6 +641,8 @@ PORT_JSON = {
 def r_beacon_port(h, q):
     if not D.REQ.ui:
         raise ApiError(403, "log in to download the beacon (it carries the hub's key)")
+    if not PUBLIC_URL and getattr(D.REQ, "sso_user", ""):
+        raise ApiError(409, "set DEVHUB_PUBLIC_URL (the hub's LAN address): the beacon can't announce through the sign-in")
     url = PUBLIC_URL or "http://%s" % (h.headers.get("Host") or "")
     autostart = (q.get("autostart") or ["0"])[0] == "1"
     conf = ("# made by %s; the key lets this device announce itself (keep the port private)\n"
@@ -551,10 +679,18 @@ def r_beacon_rotate(body, q):
 
 
 def main():
-    if not PASSWORD:
-        print("devhubsrv: set DEVHUB_PASSWORD (the web page's login); refusing to serve the LAN without it")
+    if not PASSWORD and not SSO_SECRET:
+        print("devhubsrv: set DEVHUB_PASSWORD (the web page's login) or DEVHUB_SSO_SECRET (a sign-in in front of it); "
+              "refusing to serve the LAN without one")
         raise SystemExit(1)
     os.makedirs(D.DATA, exist_ok=True)
+    if SSO_SECRET:
+        log("sign-in: on (secret in %s, person in %s/%s; %s are logged in)%s%s" % (
+            SSO_HEADER, SSO_USER_HEADER, SSO_GROUPS_HEADER, SSO_GROUP, "; the port sends pages to " + SSO_URL if SSO_URL else "; the port keeps the password login",
+            "" if PUBLIC_URL else "; set DEVHUB_PUBLIC_URL (the LAN address handhelds announce to): beacon downloads need it"))
+    else:
+        log("sign-in: off (%s)%s" % (SSO_SECRET_PROBLEM or "no DEVHUB_SSO_SECRET",
+                                      "; DEVHUB_SSO_URL is ignored" if os.environ.get("DEVHUB_SSO_URL") else ""))
     D.BEACON_KEY = secret_file("beacon.key", 32)
     ensure_hub_key()
     H.beacons = D.load_json("beacons.json", {})
