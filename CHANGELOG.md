@@ -6,6 +6,19 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.15.0 (2026-11-13)
+- `devhub pad DEV BUTTON...` presses buttons on the device's virtual gamepad, so an agent can work a GUI and check it
+  with `devhub shot`: chords (`select+y`), repeats (`down*3`), waits (`2s`), `--hold`/`--gap`; `start`, `stop` and
+  `status` plug it in, unplug it and say whether it is. AGENTS.md has a "Driving the screen" section and API.md the
+  input calls and event format.
+- `devhub install` (and the page's Install) takes PortMaster themes: a zip with a `theme.json` at the top or in one
+  folder. It's named `<name>.theme.zip` on the device, which is how harbourmaster knows a theme, and goes to PortMaster's
+  themes folder; no game list refresh. The check says what's wrong with one PortMaster can't load (a theme.json that
+  doesn't parse, two of them, files that would overwrite each other).
+- Releasing a device unplugs the virtual gamepad and keyboard, so the next holder starts without them.
+- The page's d-pad sent the wrong axes (6 and 7, throttle and rudder, with up/down and left/right swapped): its
+  on-screen d-pad and a gamepad's d-pad passed through the page now send the hat (16 and 17).
+
 ## 1.14.1 (2026-11-11)
 - Brings in 1.13.1 (the device editor shows why a save failed), which was made alongside 1.14.0.
 

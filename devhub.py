@@ -738,6 +738,9 @@ def c_install(a):
     info = res["info"]
     if info.get("kind") == "squashfs":
         print("%s: runtime (%.1f MB) for PortMaster's libs folder" % (res["name"], res.get("size", 0) / 1048576))
+    elif info.get("kind") == "theme":
+        print("%s: theme %s - %d files, %.1f MB unpacked" % (
+            res["name"], info.get("title") or "?", info.get("files", 0), info.get("uncompressed", 0) / 1048576))
     else:
         print("%s: %s - launchers %s, folders %s, %d files, %.1f MB unpacked" % (
             res["name"], info.get("title") or "?", ", ".join(info.get("launchers") or []) or "none",
@@ -1033,6 +1036,97 @@ def c_agent_guide(a):
     return 0
 
 
+# ------------------------------------------------------------ pad: DeviceHub's virtual gamepad on the device
+# Button codes are Linux's (the helper makes a uinput gamepad): a/b/x/y are where an Xbox pad has them, but which
+# one a program calls A comes from the device's own controller database (SDL), so check with a screenshot.
+PAD_BUTTONS = {"a": 0x130, "b": 0x131, "x": 0x133, "y": 0x134, "l1": 0x136, "r1": 0x137, "l2": 0x138, "r2": 0x139,
+               "select": 0x13a, "start": 0x13b, "guide": 0x13c, "l3": 0x13d, "r3": 0x13e}
+PAD_ALIASES = {"lb": "l1", "rb": "r1", "lt": "l2", "rt": "r2", "back": "select", "sel": "select", "home": "guide",
+               "menu": "guide", "south": "a", "east": "b", "north": "x", "west": "y"}
+PAD_HAT = {"up": (17, -1), "down": (17, 1), "left": (16, -1), "right": (16, 1)}     # ABS_HAT0X = 16, ABS_HAT0Y = 17
+
+
+def pad_steps(words):
+    """`a down*3 select+y 2s` -> [("press", [events down], [events up], times), ("wait", seconds), ...].
+    A chord (select+y) is pressed in order and let go in reverse; NAME*N presses N times; 500ms / 2s waits."""
+    import re
+    steps = []
+    for word in words:
+        w = word.lower()
+        m = re.fullmatch(r"(\d+(?:\.\d+)?)(ms|s)", w)
+        if m:
+            steps.append(("wait", float(m.group(1)) / (1000.0 if m.group(2) == "ms" else 1.0)))
+            continue
+        times = 1
+        if "*" in w:
+            w, n = w.rsplit("*", 1)
+            if not n.isdigit() or not 1 <= int(n) <= 100:
+                raise ValueError("%s: the count after * must be 1-100" % word)
+            times = int(n)
+        down, up = [], []
+        for name in w.split("+"):
+            name = PAD_ALIASES.get(name, name)
+            if name in PAD_BUTTONS:
+                down.append([2, PAD_BUTTONS[name], 1])
+                up.insert(0, [2, PAD_BUTTONS[name], 0])
+            elif name in PAD_HAT:
+                axis, value = PAD_HAT[name]
+                down.append([3, axis, value])
+                up.insert(0, [3, axis, 0])
+            else:
+                raise ValueError("%s: no button called %r (buttons: %s, %s; waits: 500ms, 2s)" % (
+                    word, name, " ".join(PAD_BUTTONS), " ".join(PAD_HAT)))
+        steps.append(("press", down, up, times))
+    return steps
+
+
+def c_pad(a):
+    import time
+    path = "/api/devices/%s/input/" % a.dev
+    if a.words in (["stop"], ["status"]):
+        r = call("POST", path + a.words[0], ident(a), timeout=30)
+        if a.words == ["status"] and r.get("ok"):
+            r["msg"] = "gamepad plugged in on %s" % a.dev if r.get("running") else "no gamepad plugged in on %s" % a.dev
+        elif r.get("ok"):
+            r["msg"] = "gamepad unplugged from %s" % a.dev
+        return finish(r)
+    try:
+        steps = pad_steps([w for w in a.words if w != "start"])
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
+    r = call("POST", path + "status", ident(a), timeout=30)
+    if not r.get("running"):
+        r = call("POST", path + "start", ident(a), timeout=90)
+        if not r.get("ok"):
+            return finish(r)
+        print("gamepad plugged in on %s: \"DeviceHub Gamepad\". Programs that were already running may not see it "
+              "(SDL opens controllers when it starts)" % a.dev, file=sys.stderr)
+        time.sleep(1.0)      # let udev and the programs see it
+    notices(r)
+
+    def send(events):
+        r = call("POST", path + "event", dict(ident(a), ev=events + [[4]]), timeout=30)
+        if not r.get("ok"):
+            raise SystemExit(finish(r))
+
+    for step in steps:
+        if step[0] == "wait":
+            time.sleep(step[1])
+            continue
+        _, down, up, times = step
+        for _ in range(times):
+            for event in down:      # a chord: one at a time, as fingers would
+                send([event])
+                time.sleep(0.05)
+            time.sleep(a.hold / 1000.0)
+            for event in up:
+                send([event])
+                time.sleep(0.05)
+            time.sleep(a.gap / 1000.0)
+    return 0
+
+
 def main(argv):
     if argv[:1] == ["hook"]:
         return hook()
@@ -1086,7 +1180,7 @@ def main(argv):
     s.add_argument("dev")
     s.add_argument("remote")
     s.add_argument("local")
-    s = sp("install", c_install, "install a port zip with PortMaster's harbourmaster (lock needed)")
+    s = sp("install", c_install, "install a port zip, PortMaster.zip, a .theme.zip or a runtime with PortMaster (lock needed)")
     s.add_argument("dev")
     s.add_argument("zip")
     s.add_argument("--refresh", choices=["reload", "restart", "none"], help="game list afterwards (default: reload where the front end can)")
@@ -1102,6 +1196,21 @@ def main(argv):
     s.add_argument("action", nargs="?", choices=["watch", "start", "stop", "list", "hook", "preload"])
     s.add_argument("arg", nargs="?", help="start: a label; hook: on or off")
     s.add_argument("--for", dest="for_", metavar="DURATION", help="watch: stop after this long, e.g. 30s")
+    s = sp("pad", c_pad, "press buttons on the device: a virtual gamepad (lock needed)",
+           description="Press buttons on DeviceHub's virtual gamepad on the device. It is plugged in on first use and "
+                       "unplugged by `devhub pad DEV stop` or when you release the device.",
+           formatter_class=argparse.RawDescriptionHelpFormatter,
+           epilog="examples:\n  devhub pad rg35xx down down a       down twice, then A\n"
+                  "  devhub pad rg35xx select+y          hold Select, press Y, let go of both\n"
+                  "  devhub pad rg35xx up*5 1s b         up five times, wait a second, B\n"
+                  "  devhub pad rg35xx start             plug it in only (before launching the program)\n"
+                  "  devhub pad rg35xx stop              unplug it")
+    s.add_argument("dev")
+    s.add_argument("words", nargs="+", metavar="BUTTON", help="a b x y l1 r1 l2 r2 l3 r3 select start guide up down left "
+                   "right; A+B = a chord, A*3 = three presses, 500ms / 2s = a wait; or start, stop, status")
+    s.add_argument("--hold", type=int, default=200, metavar="MS", help="how long each press is held (default 200 ms: "
+                   "much shorter and a program that polls once a frame can miss it)")
+    s.add_argument("--gap", type=int, default=250, metavar="MS", help="pause after each press (default 250 ms)")
     s = sp("shot", c_shot, "framebuffer screenshot")
     s.add_argument("dev")
     s.add_argument("out", nargs="?")
