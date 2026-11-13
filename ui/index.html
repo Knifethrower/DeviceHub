@@ -436,7 +436,7 @@ pre.log { font-family: var(--mono); font-size: 12px; background: var(--panel2); 
   <div class="dh"><h2 id="insttitle">Install a port</h2><span class="spacer"></span><button type="button" class="small" data-close>Close</button></div>
   <div class="db">
     <label class="drop" id="instdrop"><input type="file" id="instfile" accept=".zip,.squashfs,application/zip">
-      <b>Choose a port zip or a runtime .squashfs</b><span class="sub">or drop it here. A port zip is installed with the device's own PortMaster (harbourmaster), like PortMaster's autoinstall; a .squashfs runtime goes to PortMaster's libs folder.</span></label>
+      <b>Choose a port zip, a theme or a runtime .squashfs</b><span class="sub">or drop it here. A port zip, PortMaster.zip or a theme (.theme.zip) is installed with the device's own PortMaster (harbourmaster), like PortMaster's autoinstall; a .squashfs runtime goes to PortMaster's libs folder.</span></label>
     <div class="urlrow" id="insturlrow"><input id="insturl" type="url" spellcheck="false" placeholder="or install from a URL: https://…/port.zip or …/port.zip.md5">
       <button type="button" class="small" id="insturlgo">Use URL</button></div>
     <div class="portbrowse" id="portbrowse" style="margin-top:8px">
@@ -1092,7 +1092,7 @@ if (livepad) {
     e.preventDefault();
     const name = b.dataset.pad;
     if (name === "up" || name === "down" || name === "left" || name === "right") {
-      const ax = (name === "left" || name === "right") ? 7 : 6;
+      const ax = (name === "left" || name === "right") ? 16 : 17;
       const v = (name === "right" || name === "down") ? 1 : -1;
       qInput([3, ax, v]);
     } else {
@@ -1106,7 +1106,7 @@ if (livepad) {
     e.preventDefault();
     const name = b.dataset.pad;
     if (name === "up" || name === "down" || name === "left" || name === "right") {
-      const ax = (name === "left" || name === "right") ? 7 : 6;
+      const ax = (name === "left" || name === "right") ? 16 : 17;
       qInput([3, ax, 0]);
     } else {
       const m = PADMAP[name]; if (m) qInput([2, m[1], 0]);
@@ -1120,7 +1120,7 @@ if (livepad) {
     // fallback: send press+release
     const name = b.dataset.pad;
     if (name === "up" || name === "down" || name === "left" || name === "right") {
-      const ax = (name === "left" || name === "right") ? 7 : 6;
+      const ax = (name === "left" || name === "right") ? 16 : 17;
       const v = (name === "right" || name === "down") ? 1 : -1;
       qInput([3, ax, v]);
       setTimeout(() => qInput([3, ax, 0]), 80);
@@ -2000,7 +2000,7 @@ const KEYMAP = {
   "ArrowUp":103,"ArrowDown":108,"ArrowLeft":105,"ArrowRight":106,"Insert":110,"Delete":111,"Home":102,"End":107,"PageUp":104,"PageDown":109,
 };
 const PADMAP = {
-  up:[3,6,-1], down:[3,6,1], left:[3,7,-1], right:[3,7,1],
+  up:[3,17,-1], down:[3,17,1], left:[3,16,-1], right:[3,16,1],   // ABS_HAT0Y = 17, ABS_HAT0X = 16
   a:[2,0x130,1], b:[2,0x131,1], x:[2,0x133,1], y:[2,0x134,1],
   lb:[2,0x136,1], rb:[2,0x137,1], lt:[2,0x138,1], rt:[2,0x139,1],
   sel:[2,0x13a,1], start:[2,0x13b,1], home:[2,0x13c,1],
@@ -2036,7 +2036,7 @@ function qInput(ev) { if (!inp && liveDev) { startLiveInput(liveDev); } if (inp)
 function setPad(name, down) {
   const m = PADMAP[name]; if (!m) return;
   if (m[0] === 2) qInput([2, m[1], down ? 1 : 0]);
-  else if (m[0] === 3) qInput([3, m[2], down ? m[3] : 0]);  // axes handled separately below
+  else if (m[0] === 3) qInput([3, m[1], down ? m[2] : 0]);   // the d-pad: a hat axis
 }
 // wire pad buttons
 function wirePad(sel) {
@@ -2047,7 +2047,7 @@ function wirePad(sel) {
     const name = b.dataset.pad;
     const down = () => {
       if (name === "up" || name === "down" || name === "left" || name === "right") {
-        const ax = (name === "left" || name === "right") ? 7 : 6;
+        const ax = (name === "left" || name === "right") ? 16 : 17;
         const v = (name === "right" || name === "down") ? 1 : -1;
         qInput([3, ax, v]);
       } else {
@@ -2057,7 +2057,7 @@ function wirePad(sel) {
     };
     const up = () => {
       if (name === "up" || name === "down" || name === "left" || name === "right") {
-        const ax = (name === "left" || name === "right") ? 7 : 6;
+        const ax = (name === "left" || name === "right") ? 16 : 17;
         qInput([3, ax, 0]);
       } else {
         const m = PADMAP[name]; qInput([2, m[1], 0]);
@@ -2082,7 +2082,7 @@ if (livepad) {
     e.preventDefault();
     const name = b.dataset.pad;
     if (name === "up" || name === "down" || name === "left" || name === "right") {
-      const ax = (name === "left" || name === "right") ? 7 : 6;
+      const ax = (name === "left" || name === "right") ? 16 : 17;
       const v = (name === "right" || name === "down") ? 1 : -1;
       qInput([3, ax, v]);
     } else {
@@ -2096,7 +2096,7 @@ if (livepad) {
     e.preventDefault();
     const name = b.dataset.pad;
     if (name === "up" || name === "down" || name === "left" || name === "right") {
-      const ax = (name === "left" || name === "right") ? 7 : 6;
+      const ax = (name === "left" || name === "right") ? 16 : 17;
       qInput([3, ax, 0]);
     } else {
       const m = PADMAP[name]; if (m) qInput([2, m[1], 0]);
@@ -2110,7 +2110,7 @@ if (livepad) {
     // fallback: send press+release
     const name = b.dataset.pad;
     if (name === "up" || name === "down" || name === "left" || name === "right") {
-      const ax = (name === "left" || name === "right") ? 7 : 6;
+      const ax = (name === "left" || name === "right") ? 16 : 17;
       const v = (name === "right" || name === "down") ? 1 : -1;
       qInput([3, ax, v]);
       setTimeout(() => qInput([3, ax, 0]), 80);
@@ -2238,8 +2238,8 @@ function startGamepadForwarding(index) {
     if (g.axes.length >= 8 && (g.axes[7] !== undefined)) {
       const ay = g.axes[7]; if (Math.abs(ay) > 0.5) hy = ay > 0 ? 1 : -1; else if (Math.abs(ay) < 0.1 && hy === 0) hy = 0;
     }
-    if (hx !== gpState.prevHat.x) { evs.push([3, 6, hx]); gpState.prevHat.x = hx; }
-    if (hy !== gpState.prevHat.y) { evs.push([3, 7, hy]); gpState.prevHat.y = hy; }
+    if (hx !== gpState.prevHat.x) { evs.push([3, 16, hx]); gpState.prevHat.x = hx; }
+    if (hy !== gpState.prevHat.y) { evs.push([3, 17, hy]); gpState.prevHat.y = hy; }
     // analog sticks (deadzone 0.15)
     const dz = 0.15;
     const ax0 = Math.abs(g.axes[0] || 0) > dz ? g.axes[0] : 0;
@@ -2434,6 +2434,8 @@ function fileKv(j, i, kv) {
   if (i.kind === "url") return kv("Port", esc(i.title)) + kv("URL", `<span class="mono" style="word-break:break-all">${esc(j.url)}</span>`) +
     kv("How", "the device downloads it with its own harbourmaster (needs internet)" + (/\.md5$/i.test(j.url) ? " and checks it against the .md5" : ""));
   if (i.kind === "squashfs") return kv("Runtime", esc(i.title || j.name)) + kv("File", esc(j.name) + " · " + fmtMB(j.size)) + kv("Goes to", "PortMaster/libs/");
+  if (i.kind === "theme") return kv("Theme", esc(i.title)) + kv("Zip", esc(j.name) + " · " + fmtMB(j.size)) +
+    kv("Contents", (i.files || 0) + " files, " + fmtMB(i.uncompressed || 0) + " unpacked") + kv("Goes to", "PortMaster/themes/");
   if (i.kind === "portmaster") return kv("Update", esc(i.title)) + kv("Zip", esc(j.name) + " · " + fmtMB(j.size)) +
     kv("Contents", (i.files || 0) + " files, " + fmtMB(i.uncompressed || 0) + " unpacked");
   return kv("Port", esc(i.title || "(no title in port.json)")) + kv("Zip", esc(j.name) + " · " + fmtMB(j.size)) +
@@ -2453,7 +2455,7 @@ function renderPreviewAll() {
     <div class="kv">${fileKv(j, i, kv)}</div>
     <div class="msgs">${(i.errors || []).map(e => `<div class="e">${esc(e)}</div>`).join("")}${(i.warnings || []).map(w => `<div class="w">${esc(w)}</div>`).join("")}</div>
     ${j.upload || j.url ? `<div class="opts"><b>Devices</b><div class="tlist">${rows}</div>
-      ${i.kind === "squashfs" ? `<div class="sub">Copied to each device's PortMaster libs folder at the same time (SHA-1 checked); no front-end refresh needed.</div>` : `
+      ${i.kind === "theme" ? `<div class="sub">Each device installs it with its own PortMaster (harbourmaster) into its themes folder; no front-end refresh needed.</div>` : i.kind === "squashfs" ? `<div class="sub">Copied to each device's PortMaster libs folder at the same time (SHA-1 checked); no front-end refresh needed.</div>` : `
       <div class="sub">Each device installs with its own PortMaster (harbourmaster), all at the same time; an installed copy is updated in place (saves stay).${j.upload && S.settings.install_serve ? " Each device downloads the zip from DeviceHub itself (md5 checked)." : ""}</div>
       <b>Afterwards</b>
       <label><input type="radio" name="refresh" value="reload" checked> Reload the game list (devices that can't: restart the front end)</label>
@@ -2470,7 +2472,7 @@ async function startInstallAll() {
   if (!picked.length) return snack("Tick at least one device", true);
   const held = inst.res.targets.filter(t => t.held && picked.includes(t.id));
   if (held.length && !confirm(`Install anyway on ${held.map(t => `${t.name} (held by ${t.held.name})`).join(", ")}?`)) return;
-  const refresh = (document.querySelector("#instbody input[name=refresh]:checked") || {}).value || (inst.res.info.kind === "squashfs" ? "none" : "reload");
+  const refresh = (document.querySelector("#instbody input[name=refresh]:checked") || {}).value || (["squashfs", "theme"].includes(inst.res.info.kind) ? "none" : "reload");
   $("#instgo").disabled = true;
   const j = await api("POST", "/api/install-all", Object.assign(inst.url ? { url: inst.url } : { upload: inst.upload }, { refresh, devices: picked, force: held.map(t => t.id) }));
   if (j.ok === false && !(j.skipped || []).length) { $("#instgo").disabled = false; return snack(j.msg || j.error || "install refused", true); }
@@ -2511,7 +2513,7 @@ function renderPreview() {
     <div class="msgs">${(i.errors || []).map(e => `<div class="e">${esc(e)}</div>`).join("")}${(i.warnings || []).map(w => `<div class="w">${esc(w)}</div>`).join("")}
       ${held ? `<div class="w">${esc(lk.holder.name)} holds this device ("${esc(lk.purpose)}"). Installing now may disturb its work.</div>` : ""}</div>
     ${j.upload || j.url ? `<div class="opts">
-      ${i.kind === "squashfs" ? `<div class="sub">Copied to PortMaster's libs folder (SHA-1 checked); no front-end refresh needed.</div>` : `
+      ${i.kind === "theme" ? `<div class="sub">Installed with the device's own PortMaster into its themes folder; pick it under Options › Select Theme. No front-end refresh needed.</div>` : i.kind === "squashfs" ? `<div class="sub">Copied to PortMaster's libs folder (SHA-1 checked); no front-end refresh needed.</div>` : `
       <div class="sub">An installed copy is updated in place: saves and game files you added stay.</div>
       <b>Afterwards</b>
       ${opts.map(([v, l], n) => `<label><input type="radio" name="refresh" value="${v}" ${n === 0 ? "checked" : ""}> ${l}</label>`).join("")}`}
@@ -3065,7 +3067,7 @@ setInterval(refreshEvents, 4000);
 
 function livePadPress(name) {
   if (name === "up" || name === "down" || name === "left" || name === "right") {
-    const ax = (name === "left" || name === "right") ? 7 : 6;
+    const ax = (name === "left" || name === "right") ? 16 : 17;
     const v = (name === "right" || name === "down") ? 1 : -1;
     qInput([3, ax, v]);
     setTimeout(() => qInput([3, ax, 0]), 100);

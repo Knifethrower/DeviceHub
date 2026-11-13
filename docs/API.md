@@ -89,14 +89,25 @@ A reading: `{"t": ms, "fps", "worst" (ms), "src", "kind": "app"|"flip"|"idle", "
 
 | Call | Body | Notes |
 |---|---|---|
-| `POST /api/devices/<dev>/upload?name=<file>` | raw file bytes | stages a zip/squashfs; returns `upload` id |
+| `POST /api/devices/<dev>/upload?name=<file>` | raw file bytes | stages a port zip, `PortMaster.zip`, theme or squashfs; returns `upload` id and `info.kind` (none for a port, `portmaster`, `theme`, `squashfs`) |
 | `POST /api/devices/<dev>/install` | `upload` or `url`, `refresh` | lock needed; returns `job` |
 | `GET /api/jobs/<job>?lines=60` | — | progress and log of a job |
 | `POST /api/devices/<dev>/frontend` | `action`: `start`/`stop`/`restart`/`status` | lock needed for changes |
 | `POST /api/devices/<dev>/screenshot` | — | returns `file`; fetch it from `GET /shots/<file>` |
 | `GET /api/devices/<dev>/ports` | — | installed ports (read-only) |
+| `POST /api/devices/<dev>/input/start` | — | plugs in the virtual gamepad and keyboard (lock needed; aarch64 + `/dev/uinput`) |
+| `POST /api/devices/<dev>/input/event` | `ev`: a list of events | lock needed; see below |
+| `POST /api/devices/<dev>/input/status` | — | `running` (bool) |
+| `POST /api/devices/<dev>/input/stop` | — | unplugs them (releasing the device does too) |
 | `GET /api/state` | — | everything the dashboard shows: devices, locks, queues, sessions |
 | `GET /api/events?dev=<dev>&n=30&since=<epoch>` | — | recent events |
+
+Input events are lists: `[2, code, 1|0]` a gamepad button down/up (Linux codes: `0x130` A/south, `0x131` B/east,
+`0x133` X, `0x134` Y, `0x136`/`0x137` L1/R1, `0x138`/`0x139` L2/R2, `0x13a` Select, `0x13b` Start, `0x13c` Guide),
+`[3, axis, value]` a gamepad axis (raw `ABS_*` codes: the d-pad is `16` = ABS_HAT0X and `17` = ABS_HAT0Y, -1/0/1;
+sticks `0`/`1`/`3`/`4`, ±32767), `[1, code, 1|0]` a keyboard key (`KEY_*` codes), `[4]` a sync. Each call is sent
+as one batch and followed by a sync. Hold a button for 150-200 ms between its down and up events: programs that
+poll once a frame miss shorter presses.
 
 The user-only endpoints (`/api/settings`, `/api/lock/approve`, device add/edit/delete, passwords, shutdown, out of
 service) answer 403 to agents or are meant for the web UI; leave them alone.

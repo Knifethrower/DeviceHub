@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.14.1"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.15.0"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -1836,6 +1836,9 @@ def release_lock(dev, why, by=None, notify_holder=False):
     if not lk:
         return None
     threading.Thread(target=keep_awake, args=(dev,), daemon=True).start()     # the device may sleep again
+    s = H.rt.get(dev, {}).get("input")
+    if s is not None:      # the next holder starts with no virtual gamepad plugged in
+        threading.Thread(target=_input_teardown, args=(dev, s), daemon=True).start()
     event(dev, "release", "%s (held by %s since %s)" % (why, lk["holder"]["name"], hm(lk["since"])), by)
     if notify_holder and not lk["holder"].get("ui"):
         add_notice(lk["holder"], "[DeviceHub] Your lock on %s was released: %s. Take it again before you change anything there." % (
@@ -2579,14 +2582,52 @@ echo; echo "DEVHUB-RC=$rc"     # harbourmaster's last line may lack its newline
 """
 
 
-def inspect_zip(path):
-    """What a port zip holds (harbourmaster does the real check on the device)."""
+def inspect_theme(z, infos, name):
+    """A PortMaster theme: harbourmaster installs a zip whose name ends in .theme.zip into PortMaster's themes folder
+    (themes/<name without .theme.zip>/), every file by its own name: the folders in the zip don't count."""
+    errors, warnings = [], []
+    files = [i for i in infos if not i.filename.endswith(("/", "\\"))]
+    base = lambda i: i.filename.replace("\\", "/").rsplit("/", 1)[-1]
+    found = [i for i in files if base(i) == "theme.json"]
+    title = None
+    if len(found) > 1:
+        errors.append("more than one theme.json: one theme per zip (harbourmaster puts every file in one folder)")
+    elif found:
+        try:
+            data = json.loads(z.read(found[0]).decode("utf-8-sig", "replace"))
+            info = data.get("#info") if isinstance(data, dict) else None
+            title = (info or {}).get("name") if isinstance(info, dict) else None
+            if not isinstance(data, dict):
+                errors.append("theme.json is not a JSON object: PortMaster can't load it")
+        except ValueError as e:
+            errors.append("theme.json doesn't parse (%s): PortMaster can't load it" % e)
+    else:
+        errors.append("no theme.json in the zip, so it is not a PortMaster theme")
+    seen, clash = set(), set()
+    for i in files:
+        (clash if base(i) in seen else seen).add(base(i))
+    if clash:
+        warnings.append("files with the same name in different folders overwrite each other: " + ", ".join(sorted(clash)[:5]))
+    folder = name[:-len(".theme.zip")] if name.lower().endswith(".theme.zip") else name.rsplit(".", 1)[0]
+    warnings.append("a theme: it goes to PortMaster's themes/%s folder; pick it in PortMaster under Options > Select Theme" % folder)
+    return {"kind": "theme", "title": str(title or folder), "launchers": [], "dirs": [], "other": [],
+            "files": len(files), "uncompressed": sum(i.file_size for i in files), "runtime": [],
+            "errors": errors, "warnings": warnings}
+
+
+def inspect_zip(path, name=""):
+    """What a port zip holds (harbourmaster does the real check on the device): a port, PortMaster itself or a
+    theme."""
     try:
         z = zipfile.ZipFile(path)
     except (zipfile.BadZipFile, OSError):
         return {"errors": ["this is not a zip file"], "warnings": []}
     infos = z.infolist()
     names = set(i.filename for i in infos)
+    top_sh = any(n.count("/") == 0 and n.lower().endswith(".sh") for n in names)
+    theme_json = any(n.replace("\\", "/").split("/")[-1] == "theme.json" and n.replace("\\", "/").count("/") <= 1 for n in names)
+    if not top_sh and (name.lower().endswith(".theme.zip") or theme_json):
+        return inspect_theme(z, infos, name or os.path.basename(path))
     errors, warnings = [], []
     bad = [i.filename for i in infos if i.filename.startswith("/") or "\\" in i.filename or ".." in i.filename.split("/")]
     if bad:
@@ -2891,6 +2932,9 @@ def install_job(job, d, up, refresh, took_lock, who):
         if hm_error:     # harbourmaster logs a caught exception and still exits 0
             raise JobError("harbourmaster install failed: %s" % hm_error[:200])
         title = up["info"].get("title") or up["name"]
+        if up["info"].get("kind") == "theme":     # nothing new in the game list
+            refresh = "none"
+            title = "the theme " + title
         if refresh == "reload" and d.get("fe_reload"):
             job["step"] = "reloading the game list"
             rc, out, err = ssh_run(d, d["fe_reload"], timeout=60)
@@ -5262,7 +5306,7 @@ def r_upload(h, q, dev):
     name = os.path.basename((q.get("name") or ["port.zip"])[0].replace("\\", "/")).strip()
     name = re.sub(r"[^A-Za-z0-9._ +()-]", "_", name) or "port.zip"
     if not name.lower().endswith((".zip", ".squashfs")):
-        raise ApiError(400, "pick a port .zip or a runtime .squashfs file")
+        raise ApiError(400, "pick a port .zip, a .theme.zip or a runtime .squashfs file")
     os.makedirs(UPLOADS, mode=0o700, exist_ok=True)
     sweep_uploads()
     uid = secrets.token_hex(8)
@@ -5280,9 +5324,11 @@ def r_upload(h, q, dev):
         os.unlink(path)
         raise ApiError(400, "upload cut short (%d of %d bytes)" % (got, n))
     h.close_connection = False
-    info = inspect_squashfs(path, name) if name.lower().endswith(".squashfs") else inspect_zip(path)
+    info = inspect_squashfs(path, name) if name.lower().endswith(".squashfs") else inspect_zip(path, name)
     if info.get("kind") == "portmaster":
         name = "PortMaster.zip"      # harbourmaster recognises PortMaster's own zip by this name only
+    elif info.get("kind") == "theme" and not name.lower().endswith(".theme.zip"):
+        name = name.rsplit(".", 1)[0] + ".theme.zip"     # and a theme by this ending
     H.uploads[uid] = {"id": uid, "path": path, "name": name, "dev": dev, "size": n, "sha1": sha.hexdigest(),
                       "at": now(), "info": info}
     if info["errors"]:

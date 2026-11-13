@@ -188,9 +188,13 @@ r=$(installall "$T/game.zip" "game.zip"); [ "$r" = "done " ] || fail "install-al
 grep -q "installed game.zip from http://127.0.0.1:$FILEPORT/dl/" "$T/pm/installed.txt" || fail "the port wasn't fetched from DeviceHub: $(cat "$T/pm/installed.txt")"
 r=$(installall "$T/pmrel.zip" "PortMaster (2).zip"); [ "$r" = "done " ] || fail "install-all of PortMaster.zip: $r"
 grep -q "installed PortMaster.zip from http" "$T/pm/installed.txt" || fail "PortMaster.zip not installed under its own name"
+# a theme zip without .theme.zip in its name: harbourmaster knows a theme by that ending, so DeviceHub adds it
+$PY -c "import zipfile; z = zipfile.ZipFile('$T/doom.zip', 'w'); z.writestr('Doom/theme.json', '{\"#info\": {\"name\": \"Doom\"}}'); z.writestr('Doom/bg.png', 'x')"
+r=$(installall "$T/doom.zip" "Doom.zip"); [ "$r" = "done " ] || fail "install-all of a theme: $r"
+grep -q "installed Doom.theme.zip from http" "$T/pm/installed.txt" || fail "the theme wasn't installed as Doom.theme.zip: $(cat "$T/pm/installed.txt")"
 for i in $(seq 20); do   # it shuts down within a couple of seconds of the last install
     [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$FILEPORT/dl/00000000000000000000000000000000/x.zip")" = 000 ] && break
     [ "$i" = 20 ] && fail "the file server is still up after the installs"; sleep 0.5
 done
-ok "install on all: fetched from DeviceHub (md5 checked); PortMaster.zip accepted"
+ok "install on all: fetched from DeviceHub (md5 checked); PortMaster.zip and a theme accepted"
 echo PASS

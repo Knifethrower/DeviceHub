@@ -48,9 +48,9 @@ same lock rules; everything shows in the device's Console). `devhub env` needs D
    in the output of your next devhub command (and through the hooks in Claude Code). Answer with
    `devhub renew DEV 30m "why"` or `devhub release DEV`. After a long hold (60 minutes by default), a renew is
    refused while others wait: finish, release, and `acquire --wait` to rejoin at the end of the line.
-6. **Ports are installed, not copied.** A port zip, `PortMaster.zip` or a runtime `.squashfs` goes on with
-   `devhub install`: the device's own PortMaster installs it (folders, port.json, game list, permissions).
-   `devhub push` is for every other file (test builds, configs, data) and refuses port zips and runtimes;
+6. **Ports are installed, not copied.** A port zip, `PortMaster.zip`, a theme or a runtime `.squashfs` goes on with
+   `devhub install`: the device's own PortMaster installs it (folders, port.json, game list, permissions; a theme
+   into PortMaster's themes folder). `devhub push` is for every other file (configs, data) and refuses port zips and runtimes;
    never unzip a port by hand or drop it into PortMaster's `autoinstall` folder.
 7. **Leave the device clean**: front end running, your program stopped. `release` is refused while the front end is
    down. `devhub fe DEV restart` fixes that.
@@ -73,10 +73,15 @@ devhub run DEV -- 'command'                           run over the shared connec
 devhub run DEV --ro -- 'cat /tmp/log.txt'             read-only look, no lock needed
 devhub push DEV local/file /remote/path               plain file copy (lock needed; not for port zips)
 devhub pull DEV /remote/path local/file               copy from the device
-devhub install DEV game.zip | runtime.squashfs | URL  install with the device's own PortMaster (lock needed)
+devhub install DEV game.zip | runtime.squashfs | URL  install with the device's own PortMaster (lock needed);
+devhub install DEV PortMaster.zip                     PortMaster.zip too: a test build of PortMaster itself
+devhub install DEV Doom.theme.zip                     a PortMaster theme (a zip with theme.json; named .theme.zip on the device)
 devhub ports DEV                                      installed ports (read-only)
 devhub fe DEV start|stop|restart|status               front end (EmulationStation, ...)
 devhub shot DEV out.png                               screenshot of what is on screen
+devhub pad DEV down down a                            press buttons on a virtual gamepad (lock needed; see below)
+devhub pad DEV select+y 2s b                          a chord, a wait, another press
+devhub pad DEV start | stop | status                  plug the gamepad in / unplug it / is it plugged in
 devhub fps DEV [--for 30s]                            live frame rate, one line per second (no lock needed)
 devhub fps DEV start "label" / stop / list            tracked FPS session: avg, 1% low, min, worst frame
 devhub fps DEV preload                                LD_PRELOAD value that counts frames in your own launches
@@ -92,6 +97,34 @@ Exit codes: 0 ok, 1 refused or busy, 2 usage error, 3 DeviceHub not running.
 Everything `devhub run` prints also appears live in the device's Console in the web UI, so the user can follow.
 Messages starting with `[DeviceHub]` in any command's output are meant for you: lock checks, approvals, offers of
 a device that just came online. Act on them.
+
+## Driving the screen
+
+`devhub pad` presses buttons for you, and `devhub shot` shows what happened: together they let you work a GUI the
+way the tester would (PortMaster's menus, a port's title screen). The first `pad` command plugs a virtual gamepad,
+"DeviceHub Gamepad", into the device (aarch64 devices with `/dev/uinput`); `devhub pad DEV stop` or releasing the
+device unplugs it.
+
+- **Plug it in before you start the program** (`devhub pad DEV start`): most programs (SDL) look for controllers
+  when they start, and don't see one plugged in later.
+- **Which button is A depends on the device.** `a b x y` are the Linux codes where an Xbox pad has them, but the
+  device's controller database decides what a program calls A: on some devices `a` is the program's B. Press, take
+  a screenshot, and check before you go on. A program's log often prints the mapping (PortMaster's `pugwash.txt`:
+  "Opened GameController").
+- Each press is held 200 ms (`--hold MS`), then a 250 ms pause (`--gap MS`). Shorter presses get missed by programs
+  that read the buttons once a frame.
+- Buttons: `a b x y l1 r1 l2 r2 l3 r3 select start guide` and the d-pad `up down left right`. `select+y` holds Select,
+  presses Y and lets go of both; `down*3` presses three times; `500ms` or `2s` waits.
+- Stop the front end first if the program needs the screen to itself (`devhub fe DEV stop`), and start it again
+  before you release.
+
+```
+devhub fe rg35xx stop
+devhub pad rg35xx start
+devhub run rg35xx -- 'cd /roms/ports && nohup ./Shovel.sh > /tmp/shovel.log 2>&1 &'
+devhub pad rg35xx 5s start a        # wait for the title screen, then Start, A
+devhub shot rg35xx title.png
+```
 
 ## Typical session
 
