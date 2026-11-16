@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.15.0"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.15.1"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -2708,6 +2708,13 @@ def device_job(dev):
     return job_public(max(jobs, key=lambda j: j["started"]), 12) if jobs else None
 
 
+# The one sudo rule for the shell snippets: only a non-root user, and only where sudo exists. Root on a filesystem
+# where access() checks mislead ([ -w ] false on Knulli's exFAT/FUSE /userdata) or a device without sudo (Knulli)
+# never gets "sudo -n" put in front: that only failed with "sudo: command not found".
+NEED_SUDO = '{ [ "$(id -u)" != 0 ] && command -v sudo >/dev/null 2>&1; }'
+SUDO_IF_NEEDED = '{ ' + NEED_SUDO + ' && S="sudo -n"; }'
+
+
 def remote_sh(script, **kv):
     return "".join("%s=%s\n" % (k, shlex.quote(str(v))) for k, v in kv.items()) + script
 
@@ -2742,7 +2749,7 @@ def push_file_via(d, local, remote, sha1, job, url):
     # sudo only when the user can't write the folder (or make it): with sudo the file is root's, and a non-root
     # SSH user (dArkOS's ark) couldn't change its own pushed file afterwards
     prep = ('P=%s; S=""; D="$(dirname "$P")"; [ "$(id -u)" = 0 ] || [ -w "$D" ] || '
-            '{ [ ! -e "$D" ] && [ -w "$(dirname "$D")" ]; } || S="sudo -n"; $S mkdir -p "$D" && ')
+            '{ [ ! -e "$D" ] && [ -w "$(dirname "$D")" ]; } || ' + SUDO_IF_NEEDED + '; $S mkdir -p "$D" && ')
     # the command travels in the ssh command line, so stdin carries nothing but the file
     cmd = (prep + 'exec $S sh -c \'cat > "$1"\' sh "$P"') % shlex.quote(part)
     size = os.path.getsize(local)
@@ -2794,9 +2801,19 @@ def push_file_via(d, local, remote, sha1, job, url):
             job["step"] = "sending"
             got = out.decode().split()
             if len(got) >= 2 and (got[0] == sha1 or (got[0] == "none" and got[1] == str(os.path.getsize(local)))):
-                ssh_run(d, "sh -s", inp=remote_sh('S=""; [ -w "$P" ] || S="sudo -n"; $S mv -f "$P" "$R"',
-                                                  P=part, R=remote).encode(), timeout=60)
-                return
+                rc3, _, err3 = ssh_run(d, "sh -s", inp=remote_sh(
+                    'S=""; [ -w "$P" ] || ' + SUDO_IF_NEEDED + '; $S mv -f "$P" "$R"', P=part, R=remote).encode(),
+                    timeout=60)
+                if rc3 == 0:
+                    return
+                e3 = err3.decode("utf-8", "replace").strip().splitlines()
+                try:    # best-effort: don't leave a .part behind
+                    ssh_run(d, "sh -s", inp=remote_sh('S=""; [ -w "$(dirname "$P")" ] || ' + SUDO_IF_NEEDED
+                                                      + '; $S rm -f "$P"', P=part).encode(), timeout=20)
+                except Exception:
+                    pass
+                raise JobError("copied, but could not rename %s.part into place: %s"
+                               % (os.path.basename(remote), e3[-1][:200] if e3 else "exit %d" % rc3))
             job_log(job, "copy check failed (attempt %d): %s" % (attempt, " ".join(got) or "no answer"))
         else:
             job_log(job, "copy failed (attempt %d): %s" % (attempt, err[-200:] or "ssh exit %d" % rc))
@@ -2965,7 +2982,7 @@ def install_job(job, d, up, refresh, took_lock, who):
             serve_drop(job.pop("serve_tok"))
         if staged:
             try:
-                ssh_run(d, "sh -s", inp=remote_sh('S=""; [ -w "$D" ] || S="sudo -n"; $S rm -rf "$D"',
+                ssh_run(d, "sh -s", inp=remote_sh('S=""; [ -w "$D" ] || ' + SUDO_IF_NEEDED + '; $S rm -rf "$D"',
                                                   D=staged.rsplit("/", 1)[0]).encode(), timeout=30)
             except Exception:
                 pass
@@ -3073,7 +3090,7 @@ true
 """
 
 CONSOLE_TAIL = r"""
-S=""; [ -r "$P" ] || S="sudo -n"
+S=""; [ -r "$P" ] || """ + SUDO_IF_NEEDED + r"""
 [ -f "$P" ] || { echo "DEVHUB-NOFILE"; exit 0; }
 SZ=$($S wc -c < "$P"); O=$OFF
 if [ "$O" -lt 0 ]; then O=$((SZ - 16384)); [ $O -lt 0 ] && O=0; fi
@@ -4247,7 +4264,7 @@ def server_ip_for(host):
 # Deciding by the folder above made /tmp files root's for a non-root user (dArkOS's ark), which then couldn't chmod
 # them: the input helper stayed non-executable and remote input never started.
 UPLOAD_SUDO = ('P=%s; S=""; D="$(dirname "$P")"; [ "$(id -u)" = 0 ] || [ -w "$P" ] || '
-               '{ [ ! -e "$P" ] && [ -w "$D" ]; } || S="sudo -n"; ')
+               '{ [ ! -e "$P" ] && [ -w "$D" ]; } || ' + SUDO_IF_NEEDED + '; ')
 
 
 def upload_streamer(d, name, remote):
@@ -4755,8 +4772,8 @@ def r_file_put(h, q, dev):
             try:
                 push_file(d, tmp, path, sha.hexdigest(), job)
                 if re.match(r"^[0-7]{3,4}$", mode):     # best-effort; sudo when the copy came in as root's
-                    ssh_run(d, "chmod %s %s 2>/dev/null || sudo -n chmod %s %s" % (mode, remote_q(path), mode, remote_q(path)),
-                            timeout=20)
+                    ssh_run(d, "chmod %s %s 2>/dev/null || { %s && sudo -n chmod %s %s; } 2>/dev/null; true"
+                            % (mode, remote_q(path), NEED_SUDO, mode, remote_q(path)), timeout=20)
             except JobError as e:
                 return ("application/json", json.dumps({"ok": False, "msg": "copy to %s failed: %s" % (path, e)}).encode())
         finally:
@@ -4774,7 +4791,7 @@ def r_file_put(h, q, dev):
     put = ('P=%s; T=%s; N=%d; D="$(dirname "$P")"; S=""; m=""; o=""; '
            'if [ -e "$P" ]; then m=$(stat -c %%a "$P" 2>/dev/null); o=$(stat -c %%u:%%g "$P" 2>/dev/null); fi; '
            '[ "$(id -u)" = 0 ] || { [ -w "$D" ] && { [ ! -e "$P" ] || { [ -w "$P" ] && [ "${o%%%%:*}" = "$(id -u)" ]; }; }; } '
-           '|| S="sudo -n"; '
+           '|| ' + SUDO_IF_NEEDED + '; '
            '$S sh -c \'cat > "$1"\' sh "$T" && n=$($S sh -c \'wc -c < "$1"\' sh "$T") && [ "$n" -eq "$N" ] && '
            '$S mv -f "$T" "$P" && { [ -z "$S" ] || [ -z "$o" ] || $S chown "$o" "$P" 2>/dev/null || true; } && '
            '{ [ -z "$m" ] || $S chmod "$m" "$P" 2>/dev/null || true; }') % (shlex.quote(path), shlex.quote(part), n)
@@ -4793,7 +4810,8 @@ def r_file_put(h, q, dev):
     err = p.stderr.read().decode("utf-8", "replace").strip()
     rc = p.wait()
     if got != n or rc != 0:
-        ssh_run(d, "rm -f %s 2>/dev/null || sudo -n rm -f %s" % (remote_q(part), remote_q(part)), timeout=20)
+        ssh_run(d, "rm -f %s 2>/dev/null || { %s && sudo -n rm -f %s; } 2>/dev/null; true"
+                % (remote_q(part), NEED_SUDO, remote_q(part)), timeout=20)
         return ("application/json", json.dumps({"ok": False, "msg": "copy to %s failed%s" % (
             path, ": " + err.splitlines()[-1][:200] if err else " (got %d of %d bytes)" % (got, n))}).encode())
     console_append(dev, caller(ident)["name"], [["cmd", "pushed %s (%d bytes)" % (path, n)]])
@@ -4811,7 +4829,7 @@ def r_file_get(h, q, dev):
     if not ok:
         return ("application/json", json.dumps(res).encode())
     # a file the SSH user may not read (root's 600 on a non-root device): sudo, as for the listing and the changes
-    rd = 'P=%s; S=""; [ -r "$P" ] || S="sudo -n"; ' % shlex.quote(path)
+    rd = ('P=%s; S=""; [ -r "$P" ] || ' + SUDO_IF_NEEDED + '; ') % shlex.quote(path)
     rc, out, err = ssh_run(d, rd + '$S sh -c \'wc -c < "$1"\' sh "$P"', timeout=20)
     size = out.decode().strip()
     if rc != 0 or not size.isdigit():
@@ -4869,7 +4887,7 @@ echo DEVHUB-END
 FS_OP_SH = r'''
 x() {
   err=$("$@" 2>&1 >/dev/null) && return 0
-  if [ "$(id -u)" != 0 ] && printf '%s' "$err" | grep -qiE 'denied|not permitted'; then
+  if [ "$(id -u)" != 0 ] && command -v sudo >/dev/null 2>&1 && printf '%s' "$err" | grep -qiE 'denied|not permitted'; then
     err=$(sudo -n "$@" 2>&1 >/dev/null) && return 0
   fi
   printf '%s\n' "$err" | tail -n 3 >&2

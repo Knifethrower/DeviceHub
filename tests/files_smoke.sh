@@ -93,6 +93,33 @@ r = urllib.request.Request("http://127.0.0.1:%s/api/devices/smoketest/file?path=
 assert b'"ok": true' in urllib.request.urlopen(r, timeout=30).read()
 PY
 [ -x "$D/b.txt" ] && [ "$(cat "$D/b.txt")" = edited ] || fail "saving over a file lost its mode or content"
+
+# HTTP transfers: the device downloads the file from the hub to NAME.part, then it's renamed into place (Knulli left
+# the .part and the editor said "sudo: command not found" when that rename and the chmod tried sudo)
+put() {   # PATH BODY -> the upload's answer
+    python3 - "$1" "$2" <<'PY'
+import os, sys, urllib.parse, urllib.request
+r = urllib.request.Request("http://127.0.0.1:%s/api/devices/smoketest/file?path=%s" % (os.environ["DEVHUB_PORT"], urllib.parse.quote(sys.argv[1])),
+    method="PUT", data=sys.argv[2].encode(), headers={"X-DevHub-Token": open(os.environ["DEVHUB_DATA"] + "/token").read().strip(),
+                                                      "X-DevHub-Client": "ui"})
+print(urllib.request.urlopen(r, timeout=60).read().decode())
+PY
+}
+api PUT /api/settings '{"client":"ui","settings":{"install_serve":true}}' | ok "HTTP transfers on"
+put "$D/http new.txt" "via http" | ok "HTTP upload"
+[ "$(cat "$D/http new.txt")" = "via http" ] && [ ! -e "$D/http new.txt.part" ] || fail "HTTP upload left a .part or wrong content"
+put "$D/b.txt" "edited over http" | ok "HTTP save over a file"
+[ -x "$D/b.txt" ] && [ "$(cat "$D/b.txt")" = "edited over http" ] && [ ! -e "$D/b.txt.part" ] ||
+    fail "HTTP save lost the mode or content, or left a .part"
+grep -q 'served http new.txt to' "$T/data/devhubd.log" || fail "the upload did not go over HTTP"
+# and over SSH (the setting off, as on WSL): written to NAME.devhub-part, then moved
+api PUT /api/settings '{"client":"ui","settings":{"install_serve":false}}' | ok "HTTP transfers off"
+n=$(grep -c 'served b.txt to' "$T/data/devhubd.log" || true)
+put "$D/b.txt" "edited over ssh" | ok "SSH save over a file"
+[ -x "$D/b.txt" ] && [ "$(cat "$D/b.txt")" = "edited over ssh" ] && [ ! -e "$D/b.txt.devhub-part" ] ||
+    fail "SSH save lost the mode or content, or left a .devhub-part"
+[ "$(grep -c 'served b.txt to' "$T/data/devhubd.log")" = "$n" ] || fail "the SSH save went over HTTP"
+rm -f "$D/http new.txt"
 ui POST /api/devices/smoketest/fs '{"op":"cp","paths":["'"$D"'/b.txt","'"$D"'/sub"],"to":"'"$D"'/new"}' | ok "copy"
 ui POST /api/devices/smoketest/fs '{"op":"cp","paths":["'"$D"'/b.txt"],"to":"'"$D"'/new"}' | grep -q 'already exists' || fail "copy overwrote"
 ui POST /api/devices/smoketest/fs '{"op":"cp","paths":["'"$D"'/sub"],"to":"'"$D"'/sub"}' | grep -q 'into itself' || fail "copy into itself"

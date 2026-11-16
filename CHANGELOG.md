@@ -6,6 +6,13 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.15.1 (2026-11-16)
+- Knulli (root, no `sudo`) with HTTP transfers on: copied and uploaded files no longer stay as `NAME.part`, and saving
+  in the editor no longer says `sudo: command not found`. `sudo -n` is only tried by a non-root user on a device that
+  has sudo; the final rename of a copy is checked (a failure is reported and the `.part` removed, instead of the job
+  saying it worked); keeping a saved file's mode is best-effort (exFAT has none). A `.part` left by an earlier
+  version passed its SHA-1 check: renaming it to drop `.part` gives the complete file.
+
 ## 1.15.0 (2026-11-13)
 - `devhub pad DEV BUTTON...` presses buttons on the device's virtual gamepad, so an agent can work a GUI and check it
   with `devhub shot`: chords (`select+y`), repeats (`down*3`), waits (`2s`), `--hold`/`--gap`; `start`, `stop` and
