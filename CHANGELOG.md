@@ -6,6 +6,12 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.16.0 (2026-11-18)
+- The device card's *SSH* button (was *Copy SSH*) opens a shell on the device in a terminal: Windows Terminal under
+  WSL, the desktop's terminal on Linux (found in the user's session, though the hub runs as a system service), or
+  Settings > *Terminal command*. The window stays open when ssh fails, to show why. *Copy SSH command* moved to
+  *More…*; server mode keeps only the copy.
+
 ## 1.15.3 (2026-11-18)
 - Knulli (root, no `sudo`) with HTTP transfers on: copied and uploaded files no longer stay as `NAME.part`, and saving
   in the editor no longer says `sudo: command not found`. `sudo -n` is only tried by a non-root user on a device that

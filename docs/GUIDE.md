@@ -14,6 +14,12 @@ agents see [AGENTS.md](AGENTS.md).
     through a one-shot FIFO. A rejected password is not retried until you change it or press Retry.
   - *SSH key*: the keys in `~/.ssh` of the account DeviceHub runs as (or a key file path).
   - *Manual*: you open the connection yourself (*Copy open command*).
+- **SSH** opens a shell on the device in a terminal window, over the shared connection (Connect first): Windows
+  Terminal under WSL (a console window without it), on Linux `$TERMINAL` or the first of xdg-terminal-exec,
+  x-terminal-emulator, ptyxis, gnome-terminal, konsole, xfce4-terminal, kitty, alacritty, foot, wezterm, xterm, in
+  your desktop session. **Terminal command** (Settings) picks your own: `$DEVHUB_SSH` is the command to run and
+  `$DEVHUB_DEVICE` the device, e.g. `kitty sh -c "$DEVHUB_SSH"`. *More… > Copy SSH command* copies it instead; in
+  server mode the button only copies (a terminal would open on the server).
 - **Status**: online/offline, shared connection, front end, the app running, memory, temperature, battery.
   ROCKNIX devices also show their GPU driver (libmali, Panfrost or Adreno).
 - **Battery** tile: charge %, and plugged in / charging / full / on battery; voltage and current in its tooltip.
