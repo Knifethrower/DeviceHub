@@ -6,6 +6,12 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.15.1 (2026-11-17)
+- A big install over "Send files over HTTP" no longer fails on patchy Wi-Fi with "Requests error ... Read timed out".
+  harbourmaster gives up after 10 s without data; the TrimUI Smart Pro paused up to 5.4 s while downloading 500 MB at
+  1.4 MB/s, so a longer pause ended the download. When that happens, DeviceHub now sends the zip to the device itself
+  (curl, which waits through pauses, else SSH; SHA-1 checked) and harbourmaster installs that copy.
+
 ## 1.15.0 (2026-11-13)
 - `devhub pad DEV BUTTON...` presses buttons on the device's virtual gamepad, so an agent can work a GUI and check it
   with `devhub shot`: chords (`select+y`), repeats (`down*3`), waits (`2s`), `--hold`/`--gap`; `start`, `stop` and

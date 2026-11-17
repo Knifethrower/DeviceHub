@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.15.0"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.15.1"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -2888,44 +2888,66 @@ def install_job(job, d, up, refresh, took_lock, who):
             push_file(d, up["path"], staged, up["sha1"], job)
             job_log(job, "copied %s (%.1f MB, SHA-1 checked)" % (up["name"], up["size"] / 1048576))
             job["step"] = "installing (harbourmaster)"
-        p = subprocess.Popen(ssh_args(d, "sh -s"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        p.stdin.write(remote_sh(PM_FIND + PM_INSTALL, PMDIR=pm, Z=target_z).encode())
-        p.stdin.close()
-        hm_rc, extracted, hm_error = None, 0, None
-        for raw in p.stdout:
-            text = raw.decode("utf-8", "replace").replace("\r", "\n")
-            text = LOGURU_ANY.sub(lambda m: "\n" + m.group(0), text)      # a log line glued to the progress bar
-            for line in text.split("\n"):
-                if "DEVHUB-RC=" in line:      # also when glued to harbourmaster's last line
-                    line, _, code = line.partition("DEVHUB-RC=")
-                    hm_rc = int(code.strip() or 1) if code.strip().isdigit() else 1
-                    if not line.strip():
+        def run_hm(target_z):
+            """harbourmaster installs target_z (a file on the device or a URL): its exit code and caught error."""
+            p = subprocess.Popen(ssh_args(d, "sh -s"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            p.stdin.write(remote_sh(PM_FIND + PM_INSTALL, PMDIR=pm, Z=target_z).encode())
+            p.stdin.close()
+            hm_rc, extracted, hm_error = None, 0, None
+            for raw in p.stdout:
+                text = raw.decode("utf-8", "replace").replace("\r", "\n")
+                text = LOGURU_ANY.sub(lambda m: "\n" + m.group(0), text)      # a log line glued to the progress bar
+                for line in text.split("\n"):
+                    if "DEVHUB-RC=" in line:      # also when glued to harbourmaster's last line
+                        line, _, code = line.partition("DEVHUB-RC=")
+                        hm_rc = int(code.strip() or 1) if code.strip().isdigit() else 1
+                        if not line.strip():
+                            continue
+                    if HM_PROGRESS.match(line.strip()):    # the download's progress bar: the step, not the log
+                        job["step"] = "harbourmaster downloads it: " + line.strip().split("] - ", 1)[1]
                         continue
-                if HM_PROGRESS.match(line.strip()):    # the download's progress bar: the step, not the log
-                    job["step"] = "harbourmaster downloads it: " + line.strip().split("] - ", 1)[1]
-                    continue
-                if hm_error in (None, "harbourmaster crashed") and re.match(r"^\w+(Error|Exception): ", line):
-                    hm_error = line.strip()      # the exception harbourmaster caught (it still exits 0)
-                m = LOGURU.match(line)
-                if m:   # harbourmaster's own log lines: keep the message, count the per-file DEBUG noise
-                    level, msg = m.group(1), m.group(2)
-                    if level == "DEBUG":
-                        extracted += msg.startswith("Extracting ")
-                        job["extracted"] = extracted
-                        continue
-                    if level in ("ERROR", "CRITICAL") and msg.startswith("An error has been caught") and not hm_error:
-                        hm_error = "harbourmaster crashed"
-                    line = msg if level == "INFO" else "%s: %s" % (level, msg)
-                    if msg.startswith("MATCH REQS: False"):
-                        job["warning"] = ("harbourmaster says this port does not match the device's requirements "
-                                          "(arch, RAM, firmware...); it was installed anyway, as PortMaster does after its warning")
-                        line = "WARNING: " + job["warning"]
-                if line.strip():
-                    job_log(job, line)
-        p.wait()
-        if extracted:
-            job_log(job, "%d files extracted" % extracted)
+                    if hm_error in (None, "harbourmaster crashed") and re.match(r"^\w+(Error|Exception): ", line):
+                        hm_error = line.strip()      # the exception harbourmaster caught (it still exits 0)
+                    m = LOGURU.match(line)
+                    if m:   # harbourmaster's own log lines: keep the message, count the per-file DEBUG noise
+                        level, msg = m.group(1), m.group(2)
+                        if level == "DEBUG":
+                            extracted += msg.startswith("Extracting ")
+                            job["extracted"] = extracted
+                            continue
+                        if level in ("ERROR", "CRITICAL") and msg.startswith("An error has been caught") and not hm_error:
+                            hm_error = "harbourmaster crashed"
+                        line = msg if level == "INFO" else "%s: %s" % (level, msg)
+                        if msg.startswith("MATCH REQS: False"):
+                            job["warning"] = ("harbourmaster says this port does not match the device's requirements "
+                                              "(arch, RAM, firmware...); it was installed anyway, as PortMaster does after its warning")
+                            line = "WARNING: " + job["warning"]
+                    if line.strip():
+                        job_log(job, line)
+            p.wait()
+            if extracted:
+                job_log(job, "%d files extracted" % extracted)
+            return hm_rc, hm_error
+
+        hm_rc, hm_error = run_hm(target_z)
         staged = None   # the install script removed the staging folder
+        broke = [l for l in job["log"][-12:] if "Requests error" in l or "timed out" in l.lower()]
+        if (hm_rc != 0 or hm_error) and broke and target_z.startswith("http") and not up.get("url")                 and up.get("path") and os.path.isfile(up["path"]):
+            # harbourmaster gives up after 10 s without data; patchy Wi-Fi does that to big downloads (the Smart Pro
+            # paused up to 5 s at 1.4 MB/s). push_file waits through pauses (curl without a stall limit, else SSH), so
+            # the zip goes to the device first and harbourmaster installs that copy.
+            job_log(job, "the download from DeviceHub broke off (harbourmaster gives up after 10 s without data, "
+                         "which slow or patchy Wi-Fi hits on big files): sending the zip to the device first instead")
+            if job.get("serve_tok"):
+                serve_drop(job.pop("serve_tok"))
+            staged = target_z = pm + "/.devhub-staging/" + up["name"]
+            job["step"] = "sending"
+            job["total"] = up["size"]
+            push_file(d, up["path"], staged, up["sha1"], job)
+            job_log(job, "copied %s (%.1f MB, SHA-1 checked)" % (up["name"], up["size"] / 1048576))
+            job["step"] = "installing (harbourmaster)"
+            hm_rc, hm_error = run_hm(target_z)
+            staged = None
         if hm_rc != 0:
             tail = [l for l in job["log"][-8:] if not l.lstrip().startswith("- ")]
             raise JobError("harbourmaster install failed (exit %s)%s" % (hm_rc, ": " + tail[-1] if tail else ""))
