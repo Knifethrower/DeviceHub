@@ -6,6 +6,11 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.15.2 (2026-11-18)
+- DeviceHub flushes the device's card (`sync`) after a file copy, an install, a save in the file manager, and when a
+  lock ends. Writes still in memory when a device crashes, is rebooted or loses power become lost clusters on exFAT
+  and FAT cards: space marked used that no file holds, which only fsck/chkdsk gets back.
+
 ## 1.15.1 (2026-11-17)
 - A big install over "Send files over HTTP" no longer fails on patchy Wi-Fi with "Requests error ... Read timed out".
   harbourmaster gives up after 10 s without data; the TrimUI Smart Pro paused up to 5.4 s while downloading 500 MB at

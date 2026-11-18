@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.15.1"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.15.2"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -1826,6 +1826,27 @@ def do_renew(dev, c, body):
     return {"ok": True, "status": "renewed", "msg": "%s: lease now ends %s" % (dname(d), hm(now() + ttl))}
 
 
+# Flush the card a file "$F" is on (sync -f: that filesystem only), else everything. Unflushed writes when a device
+# crashes, is rebooted or loses power become lost clusters on exFAT/FAT cards: space marked used that no file holds
+# (a user found 25 GB of it after test runs). A hung FUSE mount can block sync, so callers put a timeout on the ssh.
+SYNC_SH = '{ sync -f "$F" 2>/dev/null || sync; }'
+
+
+def sync_device(dev):
+    """After a lock ends: write the holder's files out to the card (best effort, the device may be gone)."""
+    d = H.devices.get(dev)
+    if not d or rt(dev)["master"].get("state") != "up":
+        return
+    try:
+        rc, _, err = ssh_run(d, "sync", timeout=120)
+        if rc != 0:
+            log("sync", "%s: sync after release failed: %s" % (dev, err.decode("utf-8", "replace").strip()[-160:]))
+    except subprocess.TimeoutExpired:
+        log("sync", "%s: sync after release took over 2 min (slow card or a hung mount)" % dev)
+    except Exception as e:
+        log("sync", "%s: sync after release: %s" % (dev, e))
+
+
 def release_lock(dev, why, by=None, notify_holder=False):
     d = H.devices.get(dev)
     with H.lock:
@@ -1836,6 +1857,7 @@ def release_lock(dev, why, by=None, notify_holder=False):
     if not lk:
         return None
     threading.Thread(target=keep_awake, args=(dev,), daemon=True).start()     # the device may sleep again
+    threading.Thread(target=sync_device, args=(dev,), daemon=True).start()  # the holder's writes reach the card
     s = H.rt.get(dev, {}).get("input")
     if s is not None:      # the next holder starts with no virtual gamepad plugged in
         threading.Thread(target=_input_teardown, args=(dev, s), daemon=True).start()
@@ -2578,6 +2600,7 @@ mkdir -p "$TMPDIR" 2>/dev/null || $H mkdir -p "$TMPDIR"
 $H ./harbourmaster --no-check --no-colour install "$Z" </dev/null 2>&1
 rc=$?
 $S rm -rf "$PM/.devhub-staging"
+F="$PM"; { sync -f "$F" 2>/dev/null || sync; }
 echo; echo "DEVHUB-RC=$rc"     # harbourmaster's last line may lack its newline
 """
 
@@ -2794,8 +2817,10 @@ def push_file_via(d, local, remote, sha1, job, url):
             job["step"] = "sending"
             got = out.decode().split()
             if len(got) >= 2 and (got[0] == sha1 or (got[0] == "none" and got[1] == str(os.path.getsize(local)))):
-                ssh_run(d, "sh -s", inp=remote_sh('S=""; [ -w "$P" ] || S="sudo -n"; $S mv -f "$P" "$R"',
-                                                  P=part, R=remote).encode(), timeout=60)
+                # then flush that card: a crash or power cut before the kernel writes it back leaves lost clusters
+                # (orphaned space that fsck reports) on exFAT/FAT cards; sync -f is that filesystem only
+                ssh_run(d, "sh -s", inp=remote_sh('S=""; [ -w "$P" ] || S="sudo -n"; $S mv -f "$P" "$R" && ' + SYNC_SH,
+                                                  P=part, R=remote, F=remote).encode(), timeout=180)
                 return
             job_log(job, "copy check failed (attempt %d): %s" % (attempt, " ".join(got) or "no answer"))
         else:
@@ -4799,7 +4824,8 @@ def r_file_put(h, q, dev):
            '|| S="sudo -n"; '
            '$S sh -c \'cat > "$1"\' sh "$T" && n=$($S sh -c \'wc -c < "$1"\' sh "$T") && [ "$n" -eq "$N" ] && '
            '$S mv -f "$T" "$P" && { [ -z "$S" ] || [ -z "$o" ] || $S chown "$o" "$P" 2>/dev/null || true; } && '
-           '{ [ -z "$m" ] || $S chmod "$m" "$P" 2>/dev/null || true; }') % (shlex.quote(path), shlex.quote(part), n)
+           '{ [ -z "$m" ] || $S chmod "$m" "$P" 2>/dev/null || true; } && F="$P" && ' + SYNC_SH) % (
+               shlex.quote(path), shlex.quote(part), n)
     p = subprocess.Popen(ssh_args(d, put), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     got = 0
     try:
