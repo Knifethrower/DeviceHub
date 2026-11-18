@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.15.1"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.15.3"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -1826,6 +1826,27 @@ def do_renew(dev, c, body):
     return {"ok": True, "status": "renewed", "msg": "%s: lease now ends %s" % (dname(d), hm(now() + ttl))}
 
 
+# Flush the card a file "$F" is on (sync -f: that filesystem only), else everything. Unflushed writes when a device
+# crashes, is rebooted or loses power become lost clusters on exFAT/FAT cards: space marked used that no file holds
+# (a user found 25 GB of it after test runs). A hung FUSE mount can block sync, so callers put a timeout on the ssh.
+SYNC_SH = '{ sync -f "$F" 2>/dev/null || sync; }'
+
+
+def sync_device(dev):
+    """After a lock ends: write the holder's files out to the card (best effort, the device may be gone)."""
+    d = H.devices.get(dev)
+    if not d or rt(dev)["master"].get("state") != "up":
+        return
+    try:
+        rc, _, err = ssh_run(d, "sync", timeout=120)
+        if rc != 0:
+            log("sync", "%s: sync after release failed: %s" % (dev, err.decode("utf-8", "replace").strip()[-160:]))
+    except subprocess.TimeoutExpired:
+        log("sync", "%s: sync after release took over 2 min (slow card or a hung mount)" % dev)
+    except Exception as e:
+        log("sync", "%s: sync after release: %s" % (dev, e))
+
+
 def release_lock(dev, why, by=None, notify_holder=False):
     d = H.devices.get(dev)
     with H.lock:
@@ -1836,6 +1857,7 @@ def release_lock(dev, why, by=None, notify_holder=False):
     if not lk:
         return None
     threading.Thread(target=keep_awake, args=(dev,), daemon=True).start()     # the device may sleep again
+    threading.Thread(target=sync_device, args=(dev,), daemon=True).start()  # the holder's writes reach the card
     s = H.rt.get(dev, {}).get("input")
     if s is not None:      # the next holder starts with no virtual gamepad plugged in
         threading.Thread(target=_input_teardown, args=(dev, s), daemon=True).start()
@@ -2578,6 +2600,7 @@ mkdir -p "$TMPDIR" 2>/dev/null || $H mkdir -p "$TMPDIR"
 $H ./harbourmaster --no-check --no-colour install "$Z" </dev/null 2>&1
 rc=$?
 $S rm -rf "$PM/.devhub-staging"
+F="$PM"; { sync -f "$F" 2>/dev/null || sync; }
 echo; echo "DEVHUB-RC=$rc"     # harbourmaster's last line may lack its newline
 """
 
@@ -2801,9 +2824,12 @@ def push_file_via(d, local, remote, sha1, job, url):
             job["step"] = "sending"
             got = out.decode().split()
             if len(got) >= 2 and (got[0] == sha1 or (got[0] == "none" and got[1] == str(os.path.getsize(local)))):
+                # rename into place, then flush that card: a crash or power cut before the kernel writes it back
+                # leaves lost clusters (orphaned space that fsck reports) on exFAT/FAT cards; sync -f is that
+                # filesystem only. A failed sync doesn't fail the copy.
                 rc3, _, err3 = ssh_run(d, "sh -s", inp=remote_sh(
-                    'S=""; [ -w "$P" ] || ' + SUDO_IF_NEEDED + '; $S mv -f "$P" "$R"', P=part, R=remote).encode(),
-                    timeout=60)
+                    'S=""; [ -w "$P" ] || ' + SUDO_IF_NEEDED + '; $S mv -f "$P" "$R" && { ' + SYNC_SH + '; true; }',
+                    P=part, R=remote, F=remote).encode(), timeout=180)
                 if rc3 == 0:
                     return
                 e3 = err3.decode("utf-8", "replace").strip().splitlines()
@@ -2905,44 +2931,66 @@ def install_job(job, d, up, refresh, took_lock, who):
             push_file(d, up["path"], staged, up["sha1"], job)
             job_log(job, "copied %s (%.1f MB, SHA-1 checked)" % (up["name"], up["size"] / 1048576))
             job["step"] = "installing (harbourmaster)"
-        p = subprocess.Popen(ssh_args(d, "sh -s"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        p.stdin.write(remote_sh(PM_FIND + PM_INSTALL, PMDIR=pm, Z=target_z).encode())
-        p.stdin.close()
-        hm_rc, extracted, hm_error = None, 0, None
-        for raw in p.stdout:
-            text = raw.decode("utf-8", "replace").replace("\r", "\n")
-            text = LOGURU_ANY.sub(lambda m: "\n" + m.group(0), text)      # a log line glued to the progress bar
-            for line in text.split("\n"):
-                if "DEVHUB-RC=" in line:      # also when glued to harbourmaster's last line
-                    line, _, code = line.partition("DEVHUB-RC=")
-                    hm_rc = int(code.strip() or 1) if code.strip().isdigit() else 1
-                    if not line.strip():
+        def run_hm(target_z):
+            """harbourmaster installs target_z (a file on the device or a URL): its exit code and caught error."""
+            p = subprocess.Popen(ssh_args(d, "sh -s"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            p.stdin.write(remote_sh(PM_FIND + PM_INSTALL, PMDIR=pm, Z=target_z).encode())
+            p.stdin.close()
+            hm_rc, extracted, hm_error = None, 0, None
+            for raw in p.stdout:
+                text = raw.decode("utf-8", "replace").replace("\r", "\n")
+                text = LOGURU_ANY.sub(lambda m: "\n" + m.group(0), text)      # a log line glued to the progress bar
+                for line in text.split("\n"):
+                    if "DEVHUB-RC=" in line:      # also when glued to harbourmaster's last line
+                        line, _, code = line.partition("DEVHUB-RC=")
+                        hm_rc = int(code.strip() or 1) if code.strip().isdigit() else 1
+                        if not line.strip():
+                            continue
+                    if HM_PROGRESS.match(line.strip()):    # the download's progress bar: the step, not the log
+                        job["step"] = "harbourmaster downloads it: " + line.strip().split("] - ", 1)[1]
                         continue
-                if HM_PROGRESS.match(line.strip()):    # the download's progress bar: the step, not the log
-                    job["step"] = "harbourmaster downloads it: " + line.strip().split("] - ", 1)[1]
-                    continue
-                if hm_error in (None, "harbourmaster crashed") and re.match(r"^\w+(Error|Exception): ", line):
-                    hm_error = line.strip()      # the exception harbourmaster caught (it still exits 0)
-                m = LOGURU.match(line)
-                if m:   # harbourmaster's own log lines: keep the message, count the per-file DEBUG noise
-                    level, msg = m.group(1), m.group(2)
-                    if level == "DEBUG":
-                        extracted += msg.startswith("Extracting ")
-                        job["extracted"] = extracted
-                        continue
-                    if level in ("ERROR", "CRITICAL") and msg.startswith("An error has been caught") and not hm_error:
-                        hm_error = "harbourmaster crashed"
-                    line = msg if level == "INFO" else "%s: %s" % (level, msg)
-                    if msg.startswith("MATCH REQS: False"):
-                        job["warning"] = ("harbourmaster says this port does not match the device's requirements "
-                                          "(arch, RAM, firmware...); it was installed anyway, as PortMaster does after its warning")
-                        line = "WARNING: " + job["warning"]
-                if line.strip():
-                    job_log(job, line)
-        p.wait()
-        if extracted:
-            job_log(job, "%d files extracted" % extracted)
+                    if hm_error in (None, "harbourmaster crashed") and re.match(r"^\w+(Error|Exception): ", line):
+                        hm_error = line.strip()      # the exception harbourmaster caught (it still exits 0)
+                    m = LOGURU.match(line)
+                    if m:   # harbourmaster's own log lines: keep the message, count the per-file DEBUG noise
+                        level, msg = m.group(1), m.group(2)
+                        if level == "DEBUG":
+                            extracted += msg.startswith("Extracting ")
+                            job["extracted"] = extracted
+                            continue
+                        if level in ("ERROR", "CRITICAL") and msg.startswith("An error has been caught") and not hm_error:
+                            hm_error = "harbourmaster crashed"
+                        line = msg if level == "INFO" else "%s: %s" % (level, msg)
+                        if msg.startswith("MATCH REQS: False"):
+                            job["warning"] = ("harbourmaster says this port does not match the device's requirements "
+                                              "(arch, RAM, firmware...); it was installed anyway, as PortMaster does after its warning")
+                            line = "WARNING: " + job["warning"]
+                    if line.strip():
+                        job_log(job, line)
+            p.wait()
+            if extracted:
+                job_log(job, "%d files extracted" % extracted)
+            return hm_rc, hm_error
+
+        hm_rc, hm_error = run_hm(target_z)
         staged = None   # the install script removed the staging folder
+        broke = [l for l in job["log"][-12:] if "Requests error" in l or "timed out" in l.lower()]
+        if (hm_rc != 0 or hm_error) and broke and target_z.startswith("http") and not up.get("url")                 and up.get("path") and os.path.isfile(up["path"]):
+            # harbourmaster gives up after 10 s without data; patchy Wi-Fi does that to big downloads (the Smart Pro
+            # paused up to 5 s at 1.4 MB/s). push_file waits through pauses (curl without a stall limit, else SSH), so
+            # the zip goes to the device first and harbourmaster installs that copy.
+            job_log(job, "the download from DeviceHub broke off (harbourmaster gives up after 10 s without data, "
+                         "which slow or patchy Wi-Fi hits on big files): sending the zip to the device first instead")
+            if job.get("serve_tok"):
+                serve_drop(job.pop("serve_tok"))
+            staged = target_z = pm + "/.devhub-staging/" + up["name"]
+            job["step"] = "sending"
+            job["total"] = up["size"]
+            push_file(d, up["path"], staged, up["sha1"], job)
+            job_log(job, "copied %s (%.1f MB, SHA-1 checked)" % (up["name"], up["size"] / 1048576))
+            job["step"] = "installing (harbourmaster)"
+            hm_rc, hm_error = run_hm(target_z)
+            staged = None
         if hm_rc != 0:
             tail = [l for l in job["log"][-8:] if not l.lstrip().startswith("- ")]
             raise JobError("harbourmaster install failed (exit %s)%s" % (hm_rc, ": " + tail[-1] if tail else ""))
@@ -4794,7 +4842,8 @@ def r_file_put(h, q, dev):
            '|| ' + SUDO_IF_NEEDED + '; '
            '$S sh -c \'cat > "$1"\' sh "$T" && n=$($S sh -c \'wc -c < "$1"\' sh "$T") && [ "$n" -eq "$N" ] && '
            '$S mv -f "$T" "$P" && { [ -z "$S" ] || [ -z "$o" ] || $S chown "$o" "$P" 2>/dev/null || true; } && '
-           '{ [ -z "$m" ] || $S chmod "$m" "$P" 2>/dev/null || true; }') % (shlex.quote(path), shlex.quote(part), n)
+           '{ [ -z "$m" ] || $S chmod "$m" "$P" 2>/dev/null || true; } && F="$P" && ' + SYNC_SH) % (
+               shlex.quote(path), shlex.quote(part), n)
     p = subprocess.Popen(ssh_args(d, put), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     got = 0
     try:
