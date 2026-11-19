@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.16.0"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.15.4"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -4028,6 +4028,8 @@ else { Start-Process wsl.exe -ArgumentList $a }
 
 
 def term_script():
+    """The helper script's path. Run as `sh PATH` (data/ may be on a noexec mount); written whole, then renamed in,
+    so two clicks at once never run a half-written one."""
     p = jpath("term-ssh.sh")
     try:
         with open(p) as f:
@@ -4035,10 +4037,24 @@ def term_script():
                 return p
     except OSError:
         pass
-    with open(p, "w") as f:
+    tmp = "%s.%d.%d" % (p, os.getpid(), threading.get_ident())
+    with open(tmp, "w") as f:
         f.write(TERM_SH)
-    os.chmod(p, 0o755)
+    os.replace(tmp, p)
     return p
+
+
+def wsl_target():
+    """wsl.exe arguments for this distro as the hub's user: a systemd service has no WSL_DISTRO_NAME, and ssh only
+    shares the connection with the user that opened it (another one gets "multiplex uid mismatch")."""
+    import pwd
+    distro = os.environ.get("WSL_DISTRO_NAME")
+    if not distro:
+        m = re.match(r"^\\\\wsl(?:\$|\.localhost)\\([^\\]+)", wslpath_w("/"))     # \\wsl.localhost\<distro>\
+        distro = m.group(1) if m else None
+    if not distro:
+        raise ApiError(500, "could not tell which WSL distro DeviceHub runs in (wslpath -w / gave nothing usable)")
+    return ["-d", distro, "-u", pwd.getpwuid(os.getuid()).pw_name]
 
 
 def desktop_env():
@@ -4062,17 +4078,16 @@ def desktop_env():
 
 
 def open_terminal(d):
-    sh = term_script()
+    sh = ["sh", term_script()]
     ssh = ["-S", sock_path(d)] + (["-p", str(d["port"])] if d["port"] != 22 else []) + [target(d)]
     custom = H.settings.get("terminal_cmd")
     if custom:
         env = desktop_env() if PLATFORM == "linux" else dict(os.environ)
-        env["DEVHUB_SSH"] = " ".join(shlex.quote(x) for x in [sh] + ssh)
+        env["DEVHUB_SSH"] = " ".join(shlex.quote(x) for x in sh + ssh)
         env["DEVHUB_DEVICE"] = d["id"]
         cmd, how = ["sh", "-c", custom], "your terminal command"
     elif PLATFORM == "wsl":
-        distro = os.environ.get("WSL_DISTRO_NAME")
-        line = subprocess.list2cmdline((["-d", distro] if distro else []) + ["-e", sh] + ssh)
+        line = subprocess.list2cmdline(wsl_target() + ["-e"] + sh + ssh)
         p = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", TERM_PS], input=line,
                            capture_output=True, text=True, timeout=30, cwd="/mnt/c/")
         if p.returncode != 0:
@@ -4086,20 +4101,24 @@ def open_terminal(d):
         exe = next((t for t in names if shutil.which(t, path=env.get("PATH"))), None)
         if not exe:
             raise ApiError(409, "no terminal program found; set a Terminal command in Settings, or use Copy SSH command")
-        cmd = [exe] + dict(LINUX_TERMS).get(exe, ["-e"]) + [sh] + ssh
+        cmd = [exe] + dict(LINUX_TERMS).get(exe, ["-e"]) + sh + ssh
         how = exe
-    try:
-        p = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.PIPE, start_new_session=True)
-    except OSError as e:
-        raise ApiError(500, "could not start %s: %s" % (how, e))
-    try:
-        rc = p.wait(2)       # most terminals keep running; one that hands off to a server exits 0 at once
-    except subprocess.TimeoutExpired:
-        threading.Thread(target=p.communicate, daemon=True).start()     # reap it when the window closes
-        return how
-    if rc != 0:
-        raise ApiError(500, "%s failed (exit %d): %s" % (how, rc, (p.stderr.read() or b"").decode("utf-8", "replace").strip()[-200:]))
+    import tempfile
+    with tempfile.TemporaryFile() as err:     # its chatter goes to an unlinked file, read only if it fails at once
+        try:
+            p = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=err, start_new_session=True)
+        except OSError as e:
+            raise ApiError(500, "could not start %s: %s" % (how, e))
+        try:
+            rc = p.wait(1)       # most terminals keep running; one that hands off to a server exits 0 at once
+        except subprocess.TimeoutExpired:
+            threading.Thread(target=p.wait, daemon=True).start()     # reap it when the window closes
+            return how
+        if rc != 0:
+            err.seek(0)
+            tail = err.read()[-4000:].decode("utf-8", "replace").strip()[-200:]
+            raise ApiError(500, "%s failed (exit %d)%s" % (how, rc, ": " + tail if tail else ""))
     return how
 
 
