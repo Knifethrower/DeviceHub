@@ -5,8 +5,15 @@
 #define DHFPS_H
 #include <stdint.h>
 
+#include <stdio.h>
+#include <string.h>
+
+/* The folder is where the files themselves are: /tmp/devhub-fps on handhelds, ~/.cache/devhub-fps on x86_64 PCs
+ * (a flatpak such as RetroDECK has its own /tmp, but shares the home folder). dhfps_apps_dir() takes the path of
+ * the monitor or library and gives <folder>/apps, falling back to the default when the path doesn't say. */
 #define DHFPS_DIR   "/tmp/devhub-fps"
-#define DHFPS_APPS  DHFPS_DIR "/apps"
+#define DHFPS_NAME  "/devhub-fps/"
+#define DHFPS_PATH  512
 #define DHFPS_MAGIC 0x53504644u     /* "DFPS" */
 #define DHFPS_RING  256
 
@@ -20,5 +27,14 @@ struct dhfps_rec {
     char     comm[32];              /* 32: process name */
     uint32_t ring[DHFPS_RING];      /* 64: frame times in microseconds, ring[pos % DHFPS_RING] is the next slot */
 };
+
+static inline void dhfps_apps_dir(const char *self, char *out, size_t n)
+{
+    const char *p = self ? strstr(self, DHFPS_NAME) : 0;
+    if (p && (size_t)(p - self) + sizeof DHFPS_NAME + 4 < n)
+        snprintf(out, n, "%.*sapps", (int)(p - self + sizeof DHFPS_NAME - 1), self);
+    else
+        snprintf(out, n, "%s/apps", DHFPS_DIR);
+}
 
 #endif

@@ -102,7 +102,7 @@ a device that just came online. Act on them.
 
 `devhub pad` presses buttons for you, and `devhub shot` shows what happened: together they let you work a GUI the
 way the tester would (PortMaster's menus, a port's title screen). The first `pad` command plugs a virtual gamepad,
-"DeviceHub Gamepad", into the device (aarch64 devices with `/dev/uinput`); `devhub pad DEV stop` or releasing the
+"DeviceHub Gamepad", into the device (aarch64 or x86_64 devices with `/dev/uinput`); `devhub pad DEV stop` or releasing the
 device unplugs it.
 
 - **Plug it in before you start the program** (`devhub pad DEV start`): most programs (SDL) look for controllers
