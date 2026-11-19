@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.15.4"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.16.0"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -2446,7 +2446,8 @@ KMS_SH = r"""
 command -v ffmpeg >/dev/null 2>&1 || exit 3
 S=""; [ "$(id -u)" = 0 ] || { sudo -n true 2>/dev/null && S="sudo -n"; } || exit 3
 E=$(mktemp)
-$S ffmpeg -hide_banner -f kmsgrab -device /dev/dri/card0 -i - -frames:v 1 -vf hwdownload,format=bgr0 -f rawvideo - 2>"$E" >"$E.raw"
+K=$(ls /dev/dri/card* 2>/dev/null | head -n1); [ -n "$K" ] || exit 3
+$S ffmpeg -hide_banner -f kmsgrab -device "$K" -i - -frames:v 1 -vf hwdownload,format=bgr0 -f rawvideo - 2>"$E" >"$E.raw"
 rc=$?
 sz=$(grep -o 'bgr0[^,]*, [0-9]*x[0-9]*' "$E" | grep -o '[0-9]*x[0-9]*' | head -1)
 echo "KMS ${sz:-0x0} $rc"
@@ -2477,7 +2478,8 @@ DRMGRAB_PY = r'''
 import array, fcntl, mmap, os, struct, sys
 def IOWR(nr, size): return (3 << 30) | (size << 16) | (0x64 << 8) | nr
 def IOW(nr, size): return (1 << 30) | (size << 16) | (0x64 << 8) | nr
-fd = os.open("/dev/dri/card0", os.O_RDWR)
+import glob
+fd = os.open((sorted(glob.glob("/dev/dri/card[0-9]*")) or ["/dev/dri/card0"])[0], os.O_RDWR)
 fcntl.ioctl(fd, IOW(0x0D, 16), struct.pack("QQ", 2, 1))
 res = bytearray(struct.pack("QI4x", 0, 0)); fcntl.ioctl(fd, IOWR(0xB5, 16), res)
 n = struct.unpack("QI4x", res)[1]
@@ -2737,6 +2739,21 @@ def device_job(dev):
 # never gets "sudo -n" put in front: that only failed with "sudo: command not found".
 NEED_SUDO = '{ [ "$(id -u)" != 0 ] && command -v sudo >/dev/null 2>&1; }'
 SUDO_IF_NEEDED = '{ ' + NEED_SUDO + ' && S="sudo -n"; }'
+
+
+_ARCH = {}     # (device id, host) -> `uname -m`: which build of the device helpers it runs
+
+
+def device_arch(d):
+    """The device's CPU (uname -m: aarch64, armv7l, x86_64), asked once per device and address."""
+    key = (d["id"], d["host"])
+    if key not in _ARCH:
+        rc, out, err = ssh_run(d, "uname -m", timeout=15)
+        a = out.decode("utf-8", "replace").strip()
+        if rc != 0 or not a:
+            raise ApiError(503, "could not reach the device (%s)" % (err.decode("utf-8", "replace").strip() or "ssh failed"))
+        _ARCH[key] = a
+    return _ARCH[key]
 
 
 def remote_sh(script, **kv):
@@ -4239,7 +4256,7 @@ case "$want" in
   drm|fb) echo "live $want $u $a"; exit 0 ;;
 esac
 [ -n "$way" ] && [ "$a" = aarch64 ] && { echo "live wlr $u $a $way"; exit 0; }
-if [ -e /dev/dri/card0 ] || [ -e /dev/fb0 ]; then echo "live auto $u $a"; exit 0; fi
+for c in /dev/dri/card* /dev/fb0; do [ -e "$c" ] && { echo "live auto $u $a"; exit 0; }; done
 echo "live none $u $a"
 """
 
@@ -4516,8 +4533,8 @@ def r_live_start(body, q, dev):
         if mode in ("auto", "drm", "fb"):
             # dhcap (static: any CFW's libc): the DRM plane or /dev/fb0 that shows the screen, picked like a
             # screenshot is, and looked at again every few seconds
-            name = "dhcap-aarch64" if arch == "aarch64" else "dhcap-armhf"
-            if arch not in ("aarch64",) and not arch.startswith("arm"):
+            name = "dhcap-" + ("armhf" if arch.startswith("arm") else arch)
+            if not os.path.exists(os.path.join(HERE, "stream", name)):
                 raise ApiError(400, "no live view streamer for %s devices" % arch)
             remote = "/tmp/dhcap"
             args = [remote, ip, str(port), str(fps), mode] + re.findall(r"\d+", d.get("screen") or "")[:2]
@@ -5738,7 +5755,7 @@ def r_console_log(body, q, dev):
 
 
 # ---------------------------------------------------------------- remote input (keyboard + gamepad over a UDP port on the device)
-INPUT_HELPER = os.path.join(HERE, "helper", "dhinput-aarch64")
+INPUT_HELPER = os.path.join(HERE, "helper", "dhinput-%s")     # % device_arch(): aarch64, x86_64
 # with sudo where the helper ran with it; [d]hinput so pkill -f doesn't match (and end) the shell running it
 INPUT_KILL = 'S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; $S pkill -f "/tmp/[d]hinput" 2>/dev/null; true'
 INPUT_PORT_BASE = 41000
@@ -5784,22 +5801,16 @@ def _input_teardown(dev, s):
     event(dev, "input", "input session stopped", who="hub")
 
 
-def _input_probe_arch(d):
-    rc, out, err = ssh_run(d, "uname -m", timeout=15)
-    if rc != 0:
-        raise ApiError(503, "could not reach the device (%s)" % (err.decode("utf-8", "replace").strip() or "ssh failed"))
-    return out.decode("utf-8", "replace").strip()
-
-
-def _input_upload(d):
-    if not os.path.exists(INPUT_HELPER):
-        raise ApiError(500, "input helper binary is missing on the hub (helper/dhinput-aarch64)")
+def _input_upload(d, arch):
+    helper = INPUT_HELPER % arch
+    if not os.path.exists(helper):
+        raise ApiError(500, "input helper binary is missing on the hub (helper/%s)" % os.path.basename(helper))
     remote = "/tmp/dhinput"
     # stream the file over the shared connection directly to its final path
     cmd = (UPLOAD_SUDO + 'exec $S sh -c \'cat > "$1" && chmod 755 "$1"\' sh "$P"') % shlex.quote(remote)
     p = subprocess.Popen(ssh_args(d, cmd), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     try:
-        with open(INPUT_HELPER, "rb") as f:
+        with open(helper, "rb") as f:
             while True:
                 chunk = f.read(1 << 20)
                 if not chunk:
@@ -5828,9 +5839,9 @@ def r_input_start(body, q, dev):
     # clean up any stale session
     if s is not None:
         _input_teardown(dev, s)
-    arch = _input_probe_arch(d)
-    if arch != "aarch64":
-        raise ApiError(400, "input forwarding needs a 64-bit (aarch64) handheld; this one reports %s" % arch)
+    arch = device_arch(d)
+    if not os.path.exists(INPUT_HELPER % arch):
+        raise ApiError(400, "input forwarding needs an aarch64 or x86_64 device; this one reports %s" % arch)
     # make sure uinput is available
     rc, out, _ = ssh_run(d, "sh -s", inp=b"echo UID=$(id -u); ls -l /dev/uinput 2>/dev/null; modprobe uinput 2>/dev/null; ls /dev/uinput 2>/dev/null",
                          timeout=15)
@@ -5843,7 +5854,7 @@ def r_input_start(body, q, dev):
         pass
     # /dev/uinput is root's: a non-root SSH user (dArkOS's ark) runs the helper with sudo
     pre = "" if b"UID=0" in (out or b"") else "sudo -n "
-    remote = _input_upload(d)
+    remote = _input_upload(d, arch)
     # try a few ports
     last_err = ""
     for attempt in range(5):
@@ -6013,46 +6024,80 @@ def r_console_append(body, q, dev):
 
 
 # ---------------------------------------------------------------- FPS
-# fps/dhfps-mon-aarch64 runs on the device while someone watches (the UI's FPS dialog, `devhub fps`) or a tracked
+# fps/dhfps-mon-<arch> runs on the device while someone watches (the UI's FPS dialog, `devhub fps`) or a tracked
 # session records: one JSON line per second with page flips (any program, no setup) and the frame counts of
 # programs running with fps/libdhfps-*.so (LD_PRELOAD). Sources: Other_src/dhfps (build.sh).
-FPS_REMOTE = "/tmp/devhub-fps"
-FPS_FILES = {"dhfps-mon": "dhfps-mon-aarch64", "libdhfps-aarch64.so": "libdhfps-aarch64.so",
-             "libdhfps-armhf.so": "libdhfps-armhf.so"}
+FPS_REMOTE = "/tmp/devhub-fps"      # handhelds; x86_64 PCs use ~/.cache/devhub-fps (fps_dir)
+_FPS_HOME = {}                      # (device id, host) -> the SSH user's home on the device
+FPS_FILES = {   # device arch -> {name on the device: file in fps/}; 32-bit ports on aarch64 get the armhf library
+    "aarch64": {"dhfps-mon": "dhfps-mon-aarch64", "libdhfps64.so": "libdhfps-aarch64.so", "libdhfps32.so": "libdhfps-armhf.so"},
+    "x86_64": {"dhfps-mon": "dhfps-mon-x86_64", "libdhfps64.so": "libdhfps-x86_64.so"},
+}
 FPS_IDLE_S = 20          # a monitor nobody looks at (and no session) stops after this
 FPS_KEEP = 600           # seconds of samples kept in memory per device
 FPS_DIR = os.path.join(DATA, "fps")
 H.fps = {}               # dev -> {"thread", "proc", "samples", "seen", "session", "error", "hook"}
-H.fps_ver = None
+H.fps_ver = {}           # file set -> its version on the device
 
 
-def fps_version():
-    if not H.fps_ver:
+def fps_files(d):
+    """RuntimeError, like the rest of fps_deploy: the monitor thread and the routes catch that."""
+    try:
+        arch = device_arch(d)
+    except ApiError as e:
+        raise RuntimeError(e.args[-1] if e.args else "could not reach the device")
+    if arch not in FPS_FILES:
+        raise RuntimeError("no FPS tools for %s devices (aarch64 and x86_64 only)" % arch)
+    return FPS_FILES[arch]
+
+
+def fps_dir(d):
+    """Where the FPS tools live on the device: /tmp/devhub-fps, or ~/.cache/devhub-fps on x86_64. A PC runs ports in
+    a flatpak (RetroDECK) that has its own /tmp but shares the home folder. The tools find their folder from their
+    own path, so both builds work in either place."""
+    if fps_files(d) is not FPS_FILES["x86_64"]:
+        return FPS_REMOTE
+    key = (d["id"], d["host"])
+    if key not in _FPS_HOME:
+        rc, out, err = ssh_run(d, 'printf %s "$HOME"', timeout=15)
+        home = out.decode("utf-8", "replace").strip()
+        if rc != 0 or not home.startswith("/") or not re.fullmatch(r"[A-Za-z0-9_./-]+", home):
+            raise RuntimeError("could not tell the home folder on the device (%s)" % (home or err.decode("utf-8", "replace").strip()[-120:]))
+        _FPS_HOME[key] = home.rstrip("/")
+    return _FPS_HOME[key] + "/.cache/devhub-fps"
+
+
+def fps_version(files):
+    key = tuple(sorted(files.items()))
+    if key not in H.fps_ver:
         sha = hashlib.sha1()
-        for local in FPS_FILES.values():
+        for name, local in key:
+            sha.update(name.encode())
             with open(os.path.join(HERE, "fps", local), "rb") as f:
                 sha.update(f.read())
-        H.fps_ver = sha.hexdigest()[:12]
-    return H.fps_ver
+        H.fps_ver[key] = sha.hexdigest()[:12]
+    return H.fps_ver[key]
 
 
 def fps_deploy(d):
-    """Put the monitor and the preload libraries in /tmp/devhub-fps on the device (again after a reboot or update)."""
-    ver = fps_version()
-    rc, out, _ = ssh_run(d, "cat %s/VERSION 2>/dev/null" % FPS_REMOTE, timeout=20)
+    """Put the monitor and the preload libraries in the device's FPS folder (again after a reboot or update)."""
+    files = fps_files(d)
+    ver = fps_version(files)
+    fd = fps_dir(d)
+    rc, out, _ = ssh_run(d, "cat %s/VERSION 2>/dev/null" % fd, timeout=20)
     if out.decode().strip() == ver:
         return
     ssh_run(d, "kill $(pidof dhfps-mon) 2>/dev/null; true", timeout=20)     # monitors of an older version
-    for name, local in FPS_FILES.items():
-        dest = "%s/%s" % (FPS_REMOTE, name)
+    for name, local in files.items():
+        dest = "%s/%s" % (fd, name)
         with open(os.path.join(HERE, "fps", local), "rb") as f:
             rc, _, err = ssh_run(d, "mkdir -p %s/apps && chmod 1777 %s %s/apps 2>/dev/null; cat > %s.part && "
-                                    "chmod 755 %s.part && mv -f %s.part %s" % (FPS_REMOTE, FPS_REMOTE, FPS_REMOTE,
+                                    "chmod 755 %s.part && mv -f %s.part %s" % (fd, fd, fd,
                                                                                dest, dest, dest, dest),
                                  inp=f.read(), timeout=180)
         if rc != 0:
             raise RuntimeError("could not copy the FPS tools to the device: %s" % err.decode("utf-8", "replace").strip()[-160:])
-    ssh_run(d, "echo %s > %s/VERSION" % (ver, FPS_REMOTE), timeout=20)
+    ssh_run(d, "echo %s > %s/VERSION" % (ver, fd), timeout=20)
 
 
 def fps_primary(j):
@@ -6126,7 +6171,7 @@ def fps_watch(dev):
                 fps_session_stop(dev, st["error"])
             return
         # stdin stays open and unused: when this hub goes away the monitor sees end of file and stops
-        p = subprocess.Popen(ssh_args(d, "exec %s/dhfps-mon 3 21600 1" % FPS_REMOTE), stdin=subprocess.PIPE,
+        p = subprocess.Popen(ssh_args(d, "exec %s/dhfps-mon 3 21600 1" % fps_dir(d)), stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         st["proc"] = p
         try:
@@ -6224,7 +6269,7 @@ def fps_kill_stale():
         try:
             with open("/proc/%s/cmdline" % pid, "rb") as f:
                 argv = f.read().split(b"\0")
-            if os.path.basename(argv[0]) != b"ssh" or not any(FPS_REMOTE.encode() + b"/dhfps-mon" in a for a in argv) \
+            if os.path.basename(argv[0]) != b"ssh" or not any(b"/devhub-fps/dhfps-mon" in a for a in argv) \
                     or os.stat("/proc/%s" % pid).st_uid != os.getuid():
                 continue
             with open("/proc/%s/stat" % pid) as f:
@@ -6262,60 +6307,64 @@ C="$PM/control.txt"
 [ -n "$PM" ] && [ -f "$C" ] || { echo "NOCONTROL"; exit 0; }
 W=""; [ -w "$C" ] || W="sudo -n"
 case "$ACT" in
-  on)  grep -q "devhub-fps" "$C" || printf '%s\n' "$BLOCK" | $W tee -a "$C" >/dev/null
-       touch /tmp/devhub-fps/hook ;;
+  on)  # written fresh each time: a block from another folder or version is replaced
+       grep -q "devhub-fps" "$C" && $W sed -i '/# >>> devhub-fps/,/# <<< devhub-fps/d' "$C"
+       printf '%s\n' "$BLOCK" | $W tee -a "$C" >/dev/null
+       touch "$FD/hook" ;;
   off) grep -q "devhub-fps" "$C" && $W sed -i '/# >>> devhub-fps/,/# <<< devhub-fps/d' "$C"
-       rm -f /tmp/devhub-fps/hook ;;
+       rm -f "$FD/hook" ;;
 esac
-grep -q "devhub-fps" "$C" && [ -f /tmp/devhub-fps/hook ] && echo ON || echo OFF
+grep -q "devhub-fps" "$C" && [ -f "$FD/hook" ] && echo ON || echo OFF
 """
 # how the dynamic loader names its library folder ($LIB) for 64-bit programs: the 64- and 32-bit preload libraries
 # go under those names, so each program loads its own and no "wrong ELF class" warning lands in port logs
 # Which folder name the loader gives 64-bit programs for $LIB (Knulli: lib64): real copies in the candidates, then
 # a 64-bit python3 shows which one it mapped (the loader's error text would show $LIB unexpanded).
 FPS_LIB_SH = r"""
-P=/tmp/devhub-fps/probe; rm -rf $P
-for d in lib lib64 lib/aarch64-linux-gnu usr/lib usr/lib64 lib32; do
-  mkdir -p $P/$d && cp /tmp/devhub-fps/libdhfps-aarch64.so $P/$d/libdhfps.so
+P="$FD/probe"; rm -rf "$P"
+for d in lib lib64 lib/aarch64-linux-gnu lib/x86_64-linux-gnu usr/lib usr/lib64 lib32; do
+  mkdir -p "$P/$d" && cp "$FD/libdhfps64.so" "$P/$d/libdhfps.so"
 done
 X=$(command -v python3)
 [ -n "$X" ] && LD_PRELOAD="$P/\$LIB/libdhfps.so" "$X" -c 'import sys
 m = [l.split()[-1] for l in open("/proc/self/maps") if "libdhfps" in l]
 sys.stdout.write(m[0] if m else "")' </dev/null 2>/dev/null | sed "s|^$P/||; s|/libdhfps.so$||"
-rm -rf $P
+rm -rf "$P"
 """
 FPS_LIB32 = ("lib", "lib32", "lib/arm-linux-gnueabihf", "usr/lib", "usr/lib32")   # usual 32-bit $LIB names
 
 
 def fps_preload(d):
-    """The LD_PRELOAD value that counts frames on this device: /tmp/devhub-fps/L/$LIB/libdhfps.so, with the 64-bit
+    """The LD_PRELOAD value that counts frames on this device: <fps folder>/L/$LIB/libdhfps.so, with the 64-bit
     library under the loader's 64-bit $LIB name and the 32-bit one under the usual 32-bit names (each program then
     loads its own, no 'wrong ELF class' warnings). Without a probe result: the 64-bit library only."""
-    rc, out, _ = ssh_run(d, FPS_LIB_SH, timeout=30)
+    fd = fps_dir(d)
+    rc, out, _ = ssh_run(d, "sh -s", inp=remote_sh(FPS_LIB_SH, FD=fd).encode(), timeout=30)
     lib64 = out.decode().strip()
     if not re.fullmatch(r"[a-z0-9_/-]+", lib64 or ""):
-        return FPS_REMOTE + "/libdhfps-aarch64.so", False
-    cmds = ["rm -rf %s/L" % FPS_REMOTE, "mkdir -p %s/L/%s" % (FPS_REMOTE, lib64),
-            "ln -sf %s/libdhfps-aarch64.so %s/L/%s/libdhfps.so" % (FPS_REMOTE, FPS_REMOTE, lib64)]
+        return fd + "/libdhfps64.so", False
+    cmds = ["rm -rf %s/L" % fd, "mkdir -p %s/L/%s" % (fd, lib64),
+            "ln -sf %s/libdhfps64.so %s/L/%s/libdhfps.so" % (fd, fd, lib64)]
     for lib32 in FPS_LIB32:
-        if lib32 != lib64:
-            cmds += ["mkdir -p %s/L/%s" % (FPS_REMOTE, lib32),
-                     "ln -sf %s/libdhfps-armhf.so %s/L/%s/libdhfps.so" % (FPS_REMOTE, FPS_REMOTE, lib32)]
+        if lib32 != lib64 and "libdhfps32.so" in fps_files(d):
+            cmds += ["mkdir -p %s/L/%s" % (fd, lib32),
+                     "ln -sf %s/libdhfps32.so %s/L/%s/libdhfps.so" % (fd, fd, lib32)]
     ssh_run(d, " && ".join(cmds), timeout=20)
-    return FPS_REMOTE + "/L/$LIB/libdhfps.so", True
+    return fd + "/L/$LIB/libdhfps.so", True
 
 
 def fps_hook(d, act):
     """PortMaster's control.txt (every port sources it): with the hook on, ports launched from the front end load
-    the preload library. Inert once /tmp is cleared (reboot); 'off' removes the lines."""
+    the preload library. On a handheld it goes inert once /tmp is cleared (reboot); on an x86_64 PC its folder is in
+    the home folder, so it stays on until switched off. 'off' removes the lines."""
     block = ""
     if act == "on":
         fps_deploy(d)
         pre, both = fps_preload(d)
         block = ("# >>> devhub-fps: DeviceHub's FPS counter (DeviceHub's FPS dialog switches it off and removes this)\n"
-                 "[ -f /tmp/devhub-fps/hook ] && export LD_PRELOAD=\"%s${LD_PRELOAD:+ $LD_PRELOAD}\"\n"
-                 "# <<< devhub-fps" % pre.replace("$LIB", "\\$LIB"))    # $LIB is the loader's, not the shell's
-    rc, out, err = ssh_run(d, "sh -s", inp=remote_sh(FPS_HOOK_SH, PMDIR=d.get("pm_dir") or "", ACT=act,
+                 "[ -f %s/hook ] && export LD_PRELOAD=\"%s${LD_PRELOAD:+ $LD_PRELOAD}\"\n"
+                 "# <<< devhub-fps" % (fps_dir(d), pre.replace("$LIB", "\\$LIB")))    # $LIB is the loader's, not the shell's
+    rc, out, err = ssh_run(d, "sh -s", inp=remote_sh(FPS_HOOK_SH, PMDIR=d.get("pm_dir") or "", ACT=act, FD=fps_dir(d),
                                                       BLOCK=block).encode(), timeout=30)
     res = out.decode().strip().splitlines()
     if not res or res[-1] == "NOCONTROL":

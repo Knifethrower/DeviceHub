@@ -2,8 +2,9 @@
  *
  * Loaded with LD_PRELOAD. Interposes eglSwapBuffers / eglSwapBuffersWithDamage{KHR,EXT} for programs linked to
  * libEGL, and dlsym / eglGetProcAddress for those that look the function up at run time (SDL2, box64, gl4es).
- * Each counting process gets a record in /tmp/devhub-fps/apps/<pid> (see dhfps.h); nothing happens unless that
- * folder exists, so the library is inert when DeviceHub isn't watching.
+ * Each counting process gets a record in <folder>/apps/<pid> (see dhfps.h; the folder is the one this library was
+ * loaded from); nothing happens unless that folder exists, so the library is inert when DeviceHub isn't watching.
+ * GLX programs (SDL on an X11 desktop) are counted through glXSwapBuffers the same way.
  *
  * Built against an old glibc (Debian bullseye arm64 / buster armhf) so it loads on every CFW. */
 #define _GNU_SOURCE
@@ -22,10 +23,14 @@ typedef unsigned int (*swap_fn)(void *dpy, void *surf);
 typedef unsigned int (*swapd_fn)(void *dpy, void *surf, const int *rects, int n);
 typedef void *(*proc_fn)(const char *name);
 typedef void *(*dlsym_fn)(void *handle, const char *name);
+typedef void (*glxswap_fn)(void *dpy, unsigned long drawable);
 
 static swap_fn  real_swap;
 static swapd_fn real_swapd_khr, real_swapd_ext;
 static proc_fn  real_getproc;
+static glxswap_fn real_glxswap;
+static proc_fn  real_glxgetproc, real_glxgetproc_arb;
+static char apps_dir[DHFPS_PATH];
 static dlsym_fn real_dlsym;
 
 static struct dhfps_rec *rec;
@@ -36,6 +41,9 @@ unsigned int eglSwapBuffers(void *dpy, void *surf);
 unsigned int eglSwapBuffersWithDamageKHR(void *dpy, void *surf, const int *rects, int n);
 unsigned int eglSwapBuffersWithDamageEXT(void *dpy, void *surf, const int *rects, int n);
 void *eglGetProcAddress(const char *name);
+void glXSwapBuffers(void *dpy, unsigned long drawable);
+void *glXGetProcAddress(const char *name);
+void *glXGetProcAddressARB(const char *name);
 
 static dlsym_fn get_real_dlsym(void)
 {
@@ -57,14 +65,18 @@ static uint64_t now_ns(void)
 
 static void open_rec(void)
 {
-    char path[96];
+    char path[DHFPS_PATH + 16];
     int pid = getpid();
     rec = 0;
     rec_pid = pid;
     prev_ns = 0;
-    if (access(DHFPS_APPS, W_OK) != 0)
+    if (!apps_dir[0]) {
+        Dl_info info;
+        dhfps_apps_dir(dladdr((void *)open_rec, &info) ? info.dli_fname : 0, apps_dir, sizeof apps_dir);
+    }
+    if (access(apps_dir, W_OK) != 0)
         return;
-    snprintf(path, sizeof path, DHFPS_APPS "/%d", pid);
+    snprintf(path, sizeof path, "%s/%d", apps_dir, pid);
     int fd = open(path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
     if (fd < 0)
         return;
@@ -158,7 +170,42 @@ static void *wrap(const char *name, void *p)
         if (p != (void *)eglGetProcAddress) real_getproc = (proc_fn)p;
         return (void *)eglGetProcAddress;
     }
+    if (!strcmp(name, "glXSwapBuffers")) {
+        if (p != (void *)glXSwapBuffers) real_glxswap = (glxswap_fn)p;
+        return (void *)glXSwapBuffers;
+    }
+    if (!strcmp(name, "glXGetProcAddress")) {
+        if (p != (void *)glXGetProcAddress) real_glxgetproc = (proc_fn)p;
+        return (void *)glXGetProcAddress;
+    }
+    if (!strcmp(name, "glXGetProcAddressARB")) {
+        if (p != (void *)glXGetProcAddressARB) real_glxgetproc_arb = (proc_fn)p;
+        return (void *)glXGetProcAddressARB;
+    }
     return p;
+}
+
+void glXSwapBuffers(void *dpy, unsigned long drawable)
+{
+    if (!real_glxswap)
+        real_glxswap = (glxswap_fn)next("glXSwapBuffers");
+    count_frame();
+    if (real_glxswap)
+        real_glxswap(dpy, drawable);
+}
+
+void *glXGetProcAddress(const char *name)
+{
+    if (!real_glxgetproc)
+        real_glxgetproc = (proc_fn)next("glXGetProcAddress");
+    return wrap(name, real_glxgetproc ? real_glxgetproc(name) : 0);
+}
+
+void *glXGetProcAddressARB(const char *name)
+{
+    if (!real_glxgetproc_arb)
+        real_glxgetproc_arb = (proc_fn)next("glXGetProcAddressARB");
+    return wrap(name, real_glxgetproc_arb ? real_glxgetproc_arb(name) : 0);
 }
 
 void *eglGetProcAddress(const char *name)
@@ -196,7 +243,7 @@ void *dlsym(void *handle, const char *name)
     if (!ds)
         return 0;
     void *p = handle == RTLD_NEXT ? next_after(__builtin_return_address(0), name, ds) : ds(handle, name);
-    if (name[0] == 'e' && name[1] == 'g' && name[2] == 'l')
+    if ((name[0] == 'e' && name[1] == 'g' && name[2] == 'l') || (name[0] == 'g' && name[1] == 'l' && name[2] == 'X'))
         return wrap(name, p);
     return p;
 }

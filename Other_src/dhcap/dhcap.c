@@ -1,6 +1,6 @@
 /*
  * dhcap: the handheld's screen to DeviceHub over UDP, for devices without a Wayland compositor.
- * One static binary (no libraries on the device): build.sh makes aarch64 and armhf.
+ * One static binary (no libraries on the device): build.sh makes aarch64, armhf and x86_64.
  *
  * It does what DeviceHub's screenshots do, continuously: it looks at every source the display could be showing
  * (each DRM plane in use, the CRTCs' framebuffers on kernels without universal planes, and /dev/fb0) and streams
@@ -339,6 +339,9 @@ static int pick(int mode, int want_w, int want_h, int *score_out)
         if (grab(&cands[i])) continue;
         match = want_w ? (fw == want_w && fh == want_h) || (fw == want_h && fh == want_w) : 0;
         cont = content(frame, (size_t)fw * fh);
+        /* a blank fb0 the size of the screen is the idle console under a KMS desktop (an X/Wayland session on a
+           PC or VM whose real size differs from the device profile): it doesn't win on size alone */
+        if (cands[i].kind == SRC_FB && !cont) match = 0;
         sc = match * 1000000 + (cont ? 500000 : 0) + (cands[i].kind != SRC_FB) * 250000 + (fw * fh > 249999 ? 249999 : fw * fh);
         VLOG("%s %u: %dx%d, content %d, score %d", kind_name[cands[i].kind], cands[i].id, fw, fh, cont, sc);
         if (sc > bscore) { bscore = sc; best = i; }
@@ -392,6 +395,7 @@ int main(int argc, char **argv)
     cur = pick(mode, want_w, want_h, &cur_score);
     if (cur < 0) { LOG("nothing to capture: no readable DRM plane or /dev/fb0 (root needed for DRM)"); return 3; }
     cur_src = cands[cur];
+    grab(&cur_src);                              /* fw/fh are the last candidate's until the chosen one is read */
     LOG("streaming %s %u (%dx%d) to %s:%s at %d fps", kind_name[cur_src.kind], cur_src.id, fw, fh, argv[1], argv[2], fps);
     next_scan = now_s() + RESCAN_S;
 
@@ -402,6 +406,7 @@ int main(int argc, char **argv)
             int sc, b = pick(mode, want_w, want_h, &sc);
             if (b >= 0 && (cands[b].kind != cur_src.kind || cands[b].id != cur_src.id) && sc > cur_score) {
                 cur_src = cands[b];
+                grab(&cur_src);
                 LOG("now %s %u (%dx%d)", kind_name[cur_src.kind], cur_src.id, fw, fh);
             }
             cur_score = sc;

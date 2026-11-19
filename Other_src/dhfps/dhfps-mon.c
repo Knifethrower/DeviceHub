@@ -5,7 +5,9 @@
  *           DRM plane scans out (/dev/dri/card*) and the pan offset of fbdev screens (/dev/fb*; Allwinner BSP
  *           kernels such as the RG Cube XX's flip by panning a double-height framebuffer). Each change is a flip.
  *           Under a compositor (sway on ROCKNIX) this is the compositor's output rate.
- *   "apps": frames each program presented, from the records libdhfps.so keeps in /tmp/devhub-fps/apps.
+ *   "apps": frames each program presented, from the records libdhfps.so keeps in <folder>/apps (the folder this
+ *           monitor runs from, see dhfps.h). A program in a flatpak has its own process numbers, so a record whose
+ *           number isn't that program on the host is kept while its frames are recent.
  * "worst" is the longest frame in that second, in ms.
  *
  *   dhfps-mon [poll_ms=3] [max_seconds=21600] [watch_stdin=0]
@@ -167,22 +169,45 @@ static void poll_srcs(uint64_t t)
     }
 }
 
+static char apps_dir[DHFPS_PATH];
+
 static int alive(int pid)
 {
     return kill(pid, 0) == 0 || errno == EPERM;
 }
 
+/* the program that wrote the record is still there: the same pid and name on the host, or (a flatpak's own pid
+   numbers) a frame in the last 30 s */
+static int rec_live(int pid, const struct dhfps_rec *r)
+{
+    if (alive(pid)) {
+        char path[48], comm[sizeof r->comm] = { 0 };
+        snprintf(path, sizeof path, "/proc/%d/comm", pid);
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            ssize_t n = read(fd, comm, sizeof comm - 1);
+            close(fd);
+            while (n > 0 && (comm[n - 1] == '\n' || comm[n - 1] == 0))
+                comm[--n] = 0;
+        }
+        if (!r->comm[0] || !strncmp(comm, r->comm, sizeof comm))
+            return 1;
+    }
+    uint64_t last = __atomic_load_n(&r->last_ns, __ATOMIC_ACQUIRE);
+    return last && mono_ns() - last < 30000000000ull;
+}
+
 static void scan_apps(void)
 {
     for (int i = 0; i < napp; i++)        /* drop the records of programs that ended */
-        if (!alive(apps[i].pid)) {
-            char path[64];
+        if (!rec_live(apps[i].pid, apps[i].rec)) {
+            char path[DHFPS_PATH + 16];
             munmap(apps[i].rec, sizeof(struct dhfps_rec));
-            snprintf(path, sizeof path, DHFPS_APPS "/%d", apps[i].pid);
+            snprintf(path, sizeof path, "%s/%d", apps_dir, apps[i].pid);
             unlink(path);
             apps[i--] = apps[--napp];
         }
-    DIR *d = opendir(DHFPS_APPS);
+    DIR *d = opendir(apps_dir);
     if (!d)
         return;
     struct dirent *e;
@@ -195,12 +220,8 @@ static void scan_apps(void)
             known |= apps[i].pid == pid;
         if (known)
             continue;
-        char path[64];
-        snprintf(path, sizeof path, DHFPS_APPS "/%d", pid);
-        if (!alive(pid)) {
-            unlink(path);
-            continue;
-        }
+        char path[DHFPS_PATH + 16];
+        snprintf(path, sizeof path, "%s/%d", apps_dir, pid);
         int fd = open(path, O_RDONLY | O_CLOEXEC);
         if (fd < 0)
             continue;
@@ -211,6 +232,11 @@ static void scan_apps(void)
         struct dhfps_rec *r = p;
         if (__atomic_load_n(&r->magic, __ATOMIC_ACQUIRE) != DHFPS_MAGIC) {
             munmap(p, sizeof *r);
+            continue;
+        }
+        if (!rec_live(pid, r)) {
+            munmap(p, sizeof *r);
+            unlink(path);
             continue;
         }
         apps[napp].pid = pid;
@@ -287,6 +313,7 @@ int main(int argc, char **argv)
     long max_s = argc > 2 ? atol(argv[2]) : 21600;
     int watch_stdin = argc > 3 && atoi(argv[3]);
     if (poll_ms < 1) poll_ms = 1;
+    dhfps_apps_dir(argv[0], apps_dir, sizeof apps_dir);
     signal(SIGPIPE, SIG_DFL);
     open_devices();
     scan_apps();
