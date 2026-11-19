@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.15.3"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.15.4"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -70,6 +70,7 @@ DEFAULT_SETTINGS = {
     "battery_shutdown_pct": 3,     # off the charger at or below this: shut the device down cleanly (0 = off)
     "away_mode": False,            # the user's Away mode: sessions' requests for a free device are approved at once
     "notify_cmd": "",              # shell command for notifications (env DEVHUB_TITLE/TEXT/URL/KIND), any platform
+    "terminal_cmd": "",            # the SSH button's terminal (env DEVHUB_SSH, DEVHUB_DEVICE); "" = the default one
     "retrocatalog": False,         # device type list + specs from retrocatalog.com (reads its public pages on demand)
     # Files to devices over HTTP: they download from DeviceHub instead of DeviceHub copying over SSH (install on all:
     # harbourmaster fetches with an md5 check; installs, runtimes and `devhub push`: SHA-1 checked, SSH if it fails).
@@ -4002,6 +4003,136 @@ def need_lock_for(dev, d, c, what):
         raise ApiError(409, "%s: take the lock first (devhub acquire %s \"%s\")%s" % (
             dname(d), dev, what, "; " + busy_text(d, lk) if lk else ""))
     lk["last_activity"] = now()
+
+
+# ---------------------------------------------------------------- SSH terminal (the page's SSH button)
+
+TERM_SH = """#!/bin/sh
+# DeviceHub: a shell on a device for the page's SSH button. Keeps the window open when ssh itself fails.
+ssh "$@"
+rc=$?
+if [ "$rc" -eq 255 ]; then printf '\\nssh failed (exit 255). Press Enter to close. '; read -r _; fi
+"""
+
+# Linux terminals and how each takes a command: the first one found runs it
+LINUX_TERMS = [("xdg-terminal-exec", []), ("x-terminal-emulator", ["-e"]), ("ptyxis", ["--"]),
+               ("gnome-terminal", ["--"]), ("konsole", ["-e"]), ("xfce4-terminal", ["-x"]), ("kitty", []),
+               ("alacritty", ["-e"]), ("foot", []), ("wezterm", ["start", "--"]), ("xterm", ["-e"])]
+
+# stdin: the wsl.exe argument line. Windows Terminal when there is one, otherwise a console window.
+TERM_PS = r"""
+$a = [Console]::In.ReadToEnd().Trim()
+if (Get-Command wt.exe -ErrorAction SilentlyContinue) { Start-Process wt.exe -ArgumentList ('new-tab wsl.exe ' + $a) }
+else { Start-Process wsl.exe -ArgumentList $a }
+"""
+
+
+def term_script():
+    """The helper script's path. Run as `sh PATH` (data/ may be on a noexec mount); written whole, then renamed in,
+    so two clicks at once never run a half-written one."""
+    p = jpath("term-ssh.sh")
+    try:
+        with open(p) as f:
+            if f.read() == TERM_SH:
+                return p
+    except OSError:
+        pass
+    tmp = "%s.%d.%d" % (p, os.getpid(), threading.get_ident())
+    with open(tmp, "w") as f:
+        f.write(TERM_SH)
+    os.replace(tmp, p)
+    return p
+
+
+def wsl_target():
+    """wsl.exe arguments for this distro as the hub's user: a systemd service has no WSL_DISTRO_NAME, and ssh only
+    shares the connection with the user that opened it (another one gets "multiplex uid mismatch")."""
+    import pwd
+    distro = os.environ.get("WSL_DISTRO_NAME")
+    if not distro:
+        m = re.match(r"^\\\\wsl(?:\$|\.localhost)\\([^\\]+)", wslpath_w("/"))     # \\wsl.localhost\<distro>\
+        distro = m.group(1) if m else None
+    if not distro:
+        raise ApiError(500, "could not tell which WSL distro DeviceHub runs in (wslpath -w / gave nothing usable)")
+    return ["-d", distro, "-u", pwd.getpwuid(os.getuid()).pw_name]
+
+
+def desktop_env():
+    """The environment of the user's desktop session: the hub runs as a system service without DISPLAY and the like,
+    so it asks the user's systemd manager for them."""
+    env = dict(os.environ)
+    if env.get("DISPLAY") or env.get("WAYLAND_DISPLAY"):
+        return env
+    run = "/run/user/%d" % os.getuid()
+    env.setdefault("XDG_RUNTIME_DIR", run)
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", "unix:path=%s/bus" % run)
+    try:
+        p = subprocess.run(["systemctl", "--user", "show-environment"], env=env, capture_output=True, text=True, timeout=10)
+        for line in p.stdout.splitlines():
+            k, _, v = line.partition("=")
+            if k and not v.startswith("$'"):     # $'...' values have characters we would have to unquote
+                env[k] = v
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return env
+
+
+def open_terminal(d):
+    sh = ["sh", term_script()]
+    ssh = ["-S", sock_path(d)] + (["-p", str(d["port"])] if d["port"] != 22 else []) + [target(d)]
+    custom = H.settings.get("terminal_cmd")
+    if custom:
+        env = desktop_env() if PLATFORM == "linux" else dict(os.environ)
+        env["DEVHUB_SSH"] = " ".join(shlex.quote(x) for x in sh + ssh)
+        env["DEVHUB_DEVICE"] = d["id"]
+        cmd, how = ["sh", "-c", custom], "your terminal command"
+    elif PLATFORM == "wsl":
+        line = subprocess.list2cmdline(wsl_target() + ["-e"] + sh + ssh)
+        p = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", TERM_PS], input=line,
+                           capture_output=True, text=True, timeout=30, cwd="/mnt/c/")
+        if p.returncode != 0:
+            raise ApiError(500, "could not open a Windows terminal: %s" % ((p.stderr or "").strip()[-200:] or "exit %d" % p.returncode))
+        return "a Windows terminal"
+    else:
+        env = desktop_env()
+        if not (env.get("DISPLAY") or env.get("WAYLAND_DISPLAY")):
+            raise ApiError(409, "no desktop session found to open a terminal in; set a Terminal command in Settings, or use Copy SSH command")
+        names = ([env["TERMINAL"]] if env.get("TERMINAL") else []) + [t for t, _ in LINUX_TERMS]
+        exe = next((t for t in names if shutil.which(t, path=env.get("PATH"))), None)
+        if not exe:
+            raise ApiError(409, "no terminal program found; set a Terminal command in Settings, or use Copy SSH command")
+        cmd = [exe] + dict(LINUX_TERMS).get(exe, ["-e"]) + sh + ssh
+        how = exe
+    import tempfile
+    with tempfile.TemporaryFile() as err:     # its chatter goes to an unlinked file, read only if it fails at once
+        try:
+            p = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=err, start_new_session=True)
+        except OSError as e:
+            raise ApiError(500, "could not start %s: %s" % (how, e))
+        try:
+            rc = p.wait(1)       # most terminals keep running; one that hands off to a server exits 0 at once
+        except subprocess.TimeoutExpired:
+            threading.Thread(target=p.wait, daemon=True).start()     # reap it when the window closes
+            return how
+        if rc != 0:
+            err.seek(0)
+            tail = err.read()[-4000:].decode("utf-8", "replace").strip()[-200:]
+            raise ApiError(500, "%s failed (exit %d)%s" % (how, rc, ": " + tail if tail else ""))
+    return how
+
+
+@route("POST", r"/api/devices/([a-z0-9_-]+)/terminal")
+def r_terminal(body, q, dev):
+    d = need_device(dev)
+    if GATE:
+        raise ApiError(409, "server mode: a terminal would open on the server; use Copy SSH command")
+    if not caller(body).get("ui"):
+        raise ApiError(403, "only the user opens terminals (DeviceHub UI)")
+    if rt(dev)["master"].get("state") != "up":
+        raise ApiError(409, "%s: no shared SSH connection; press Connect first" % dname(d))
+    how = open_terminal(d)
+    return {"ok": True, "msg": "SSH to %s opened in %s" % (d.get("name") or dev, how)}
 
 
 @route("POST", r"/api/devices/([a-z0-9_-]+)/service")

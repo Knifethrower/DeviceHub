@@ -95,6 +95,7 @@ A reading: `{"t": ms, "fps", "worst" (ms), "src", "kind": "app"|"flip"|"idle", "
 | `POST /api/devices/<dev>/frontend` | `action`: `start`/`stop`/`restart`/`status` | lock needed for changes |
 | `POST /api/devices/<dev>/screenshot` | — | returns `file`; fetch it from `GET /shots/<file>` |
 | `GET /api/devices/<dev>/ports` | — | installed ports (read-only) |
+| `POST /api/devices/<dev>/terminal` | — | the UI only: opens a shell on the device in a terminal on the hub's desktop (shared connection must be up; not in server mode) |
 | `POST /api/devices/<dev>/input/start` | — | plugs in the virtual gamepad and keyboard (lock needed; aarch64 + `/dev/uinput`) |
 | `POST /api/devices/<dev>/input/event` | `ev`: a list of events | lock needed; see below |
 | `POST /api/devices/<dev>/input/status` | — | `running` (bool) |

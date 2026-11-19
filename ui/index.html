@@ -674,7 +674,7 @@ function card(d) {
       <button class="small" data-act="live" ${up ? "" : "disabled"} title="watch this screen in the streamer: it sends only the frames that changed, so an idle menu costs almost nothing">Live screen</button>
       <button class="small" data-act="shots" title="past screenshots of this device">Screenshots</button>
       <button class="small" data-act="fps" title="frame rate on the screen and inside ports, live and as tracked sessions">FPS</button>
-      <button class="small" data-act="copyssh">Copy SSH</button>
+      ${S.server ? `<button class="small" data-act="copyssh">Copy SSH</button>` : `<button class="small" data-act="term" ${up && m.state === "up" ? "" : "disabled"} title="open a shell on the device in your terminal, over the shared connection (Copy SSH command is under More…)">SSH</button>`}
       <button class="small" data-act="edit">Edit</button>
     </div>
     ${d.job ? jobBox(d.job) : ""}
@@ -687,6 +687,7 @@ function card(d) {
         <button class="small" data-act="refresh">Refresh status</button>
         ${d.auth !== "manual" ? `<button class="small" data-act="copyopen">Copy open command</button>` : ""}
         ${d.smb ? `<button class="small" data-act="copysmb">Copy SMB path</button>` : ""}
+        ${S.server ? "" : `<button class="small" data-act="copyssh">Copy SSH command</button>`}
         <button class="small" data-act="copyacq">Copy acquire command</button>
         ${m.state === "hostkey_changed" ? `<button class="small danger" data-act="hostkey">Forget host key</button>` : ""}
       </div>
@@ -976,6 +977,7 @@ document.addEventListener("click", async e => {
   switch (a) {
     case "edit": return openEditor(d);
     case "copyssh": return copy(d.ssh_cmd);
+    case "term": return act(api("POST", `/api/devices/${dev}/terminal`, {}));
     case "copyopen": return copy(d.open_cmd);
     case "copysmb": return copy(d.smb);
     case "copyacq": return copy(`devhub acquire ${d.id} "purpose" --for 30m`);
@@ -3025,6 +3027,7 @@ const SETTINGS = [
   ["battery_shutdown_pct", "Off the charger: shut the device down cleanly at this battery level (%, 0 = off)", "number"],
   ["toasts", "Windows notifications (WSL only) when no DeviceHub page with notifications on is open (otherwise the page notifies)", "checkbox"],
   ["notify_cmd", "Notification command (optional, any platform; gets DEVHUB_TITLE, DEVHUB_TEXT, DEVHUB_URL, DEVHUB_KIND), e.g. notify-send \"$DEVHUB_TITLE\" \"$DEVHUB_TEXT\"", "text"],
+  ["terminal_cmd", "Terminal command for the SSH button (optional; empty: Windows Terminal under WSL, your desktop's terminal on Linux). $DEVHUB_SSH is the command to run, e.g. kitty sh -c \"$DEVHUB_SSH\"", "text"],
   ["install_serve", "Send files over HTTP: devices download installs, runtimes and devhub push files from DeviceHub (checked; SSH again if a download fails). Off: DeviceHub copies them over SSH. Under WSL a small Windows Python server sends them (Windows Firewall may ask once)", "checkbox"],
   ["win_python", "Windows python.exe for HTTP transfers under WSL (empty: the one on the Windows PATH)", "text"],
   ["retrocatalog", "Device types from Retro Catalog (retrocatalog.com): the editor reads its model list and a model's spec page when you pick it", "checkbox"],
