@@ -6,6 +6,27 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.16.0 (2026-11-19)
+- x86_64 devices (Steam Deck, PCs, VMs): live screen, remote input and the FPS counter have x86_64 builds
+  (`stream/dhcap-x86_64`, `helper/dhinput-x86_64`, `fps/dhfps-mon-x86_64`, `fps/libdhfps-x86_64.so`), picked by
+  the device's `uname -m` (asked once per device). The build scripts in `Other_src/` make them with the host gcc;
+  the preload library in a Debian bullseye container (glibc 2.31). Live screen and input still need root or
+  password-free `sudo` on the device, as on ARM.
+- Screenshots and the live-screen probe use the device's first `/dev/dri/card*`, not only `card0` (VMs and some
+  boards number it `card1`).
+- Live screen (dhcap): a blank `/dev/fb0` no longer wins over the real DRM plane just because its size matches the
+  device profile's screen (a desktop or VM running at another resolution streamed a black console). Its log line
+  shows the chosen source's size. The ARM builds of dhcap still need rebuilding with the cross compilers.
+- The FPS tools on the device are now `libdhfps64.so` / `libdhfps32.so` (copied again once). On x86_64 they live
+  in `~/.cache/devhub-fps` instead of `/tmp/devhub-fps`: RetroDECK and other flatpaks have their own `/tmp`, but
+  share the home folder. The library and monitor find their folder from their own path (handhelds keep `/tmp`).
+  There the PortMaster hook stays on across reboots until switched off. Switching the hook on rewrites its lines in
+  `control.txt`, so a block pointing at another folder is replaced.
+- FPS on x86_64: the counter also counts `glXSwapBuffers` (SDL on an X11 desktop draws with GLX, not EGL). A
+  program in a flatpak has its own process numbers, so the monitor keeps its record while it has drawn in the last
+  30 s instead of dropping it as a dead process. Only the x86_64 builds have these changes until the ARM ones are
+  rebuilt.
+
 ## 1.15.4 (2026-11-18)
 - The device card's *SSH* button (was *Copy SSH*) opens a shell on the device in a terminal: Windows Terminal under
   WSL, the desktop's terminal on Linux (found in the user's session, though the hub runs as a system service), or
