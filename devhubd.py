@@ -6213,7 +6213,8 @@ def fps_session_add(s, j):
     s["worst"] = max(s["worst"], j["worst"] or 0)
     s["srcs"][j["src"] or "-"] = s["srcs"].get(j["src"] or "-", 0) + 1
     with open(fps_session_path(s["id"], "jsonl"), "a", encoding="utf-8") as f:
-        f.write(json.dumps({k: j[k] for k in ("t", "fps", "worst", "src", "kind", "flip", "apps")}) + "\n")
+        f.write(json.dumps({k: j[k] for k in ("t", "fps", "worst", "src", "kind", "flip", "apps", "sys", "top")
+                            if k in j}) + "\n")     # sys/top: monitors from 1.17 on
 
 
 def fps_proc_of(x, name):
