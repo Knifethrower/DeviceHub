@@ -8,6 +8,7 @@
 #                          end-of-life, so apt uses the image's pinned snapshot.debian.org sources)
 # The chroots need qemu-user binfmt. Run as root (chroot):  sudo ./build.sh   (CHROOT64=/path CHROOT32=/path)
 # x86_64 only (no root, no chroots; Docker for the library):  ONLY=x86_64 ./build.sh
+# The two monitors only (no root, no chroots, no Docker):        ONLY=mon ./build.sh
 set -e
 SRC=$(cd "$(dirname "$0")" && pwd)
 OUT=$(cd "$SRC/../.." && pwd)/fps
@@ -15,6 +16,12 @@ CHROOT64=${CHROOT64:-/home/$SUDO_USER/chroot-bullseye}
 CHROOT32=${CHROOT32:-/home/$SUDO_USER/chroot-buster-armhf}
 mkdir -p "$OUT"
 
+if [ "$ONLY" = mon ]; then
+    aarch64-linux-gnu-gcc -O2 -Wall -static -s -o "$OUT/dhfps-mon-aarch64" "$SRC/dhfps-mon.c"
+    gcc -O2 -Wall -static -s -o "$OUT/dhfps-mon-x86_64" "$SRC/dhfps-mon.c"
+    chmod 644 "$OUT"/dhfps-mon-*
+    ls -l "$OUT"/dhfps-mon-*; exit 0
+fi
 if [ "$(uname -m)" = x86_64 ]; then
     gcc -O2 -Wall -static -s -o "$OUT/dhfps-mon-x86_64" "$SRC/dhfps-mon.c"
     docker run --rm -v "$SRC:/src:ro" -v "$OUT:/out" debian:bullseye sh -c \

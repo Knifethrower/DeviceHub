@@ -82,8 +82,14 @@ its permissions.
 | `GET /api/devices/<dev>/fps/preload` | — | the `LD_PRELOAD` value that counts frames in a program you launch |
 | `POST /api/devices/<dev>/fps/hook` | `on`: bool | count frames in ports launched from PortMaster (lock needed) |
 
-A reading: `{"t": ms, "fps", "worst" (ms), "src", "kind": "app"|"flip"|"idle", "flip": [...], "apps": [...]}`.
-`fps` is the busiest program counted inside (`kind: app`), else the busiest screen-flip source.
+A reading: `{"t": ms, "fps", "worst" (ms), "src", "kind": "app"|"flip"|"idle", "flip": [...], "apps": [...], "sys",
+"top"}`. `fps` is the busiest program counted inside (`kind: app`), else the busiest screen-flip source. `sys`:
+`{"cores", "cpu"` (% of all cores), `"total_mb", "used_mb", "avail_mb", "swap_mb", "mhz"` (cpu0), `"temp"` (°C)`}`;
+`top`: the three busiest processes, `[{"pid", "comm", "cpu"` (% of one core), `"rss"` (MB)`}]`; `apps` entries get
+`cpu` and `rss` too. A session summary adds `cpu_avg`, `cpu_max`, `mem_used_max_mb`, `mem_avail_min_mb`,
+`mem_total_mb`, `swap_max_mb`, `mhz_avg`, `temp_max` and, for the program it follows (`proc`: the one counted inside
+most seconds, else the busiest), `proc_cpu_avg`, `proc_cpu_max`, `proc_rss_max_mb`. Monitors before 1.17 send no
+`sys`/`top`; their sessions have none of these.
 
 ## Device jobs
 

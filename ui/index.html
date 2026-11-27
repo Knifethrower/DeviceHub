@@ -1377,6 +1377,12 @@ async function pollFps() {
     const rows = [];
     for (const a of last.apps || []) rows.push(`${String(a.fps.toFixed(1)).padStart(6)} fps  ${a.comm} (pid ${a.pid}, preload)  worst ${a.worst.toFixed(1)} ms`);
     for (const f of last.flip || []) rows.push(`${String(f.fps.toFixed(1)).padStart(6)} fps  ${f.src} (page flips)  worst ${f.worst.toFixed(1)} ms`);
+    const y = last.sys;
+    if (y) {
+      rows.push("", `CPU ${y.cpu != null ? y.cpu.toFixed(0) + "%" : "–"} of ${y.cores} cores · memory ${y.used_mb ?? "–"} of ${y.total_mb ?? "–"} MB used (${y.avail_mb ?? "–"} free)` +
+        `${y.swap_mb ? ` · swap ${y.swap_mb} MB` : ""}${y.mhz ? ` · ${y.mhz} MHz` : ""}${y.temp != null ? ` · ${y.temp.toFixed(0)} °C` : ""}`);
+      for (const t of last.top || []) rows.push(`${String(t.cpu.toFixed(0) + "%").padStart(6)} of a core  ${t.comm} (pid ${t.pid})  ${t.rss.toFixed(0)} MB`);
+    }
     $("#fpsrows").textContent = rows.join("\n");
     if ($("#fpsview").hidden) fpsChart($("#fpschart"), j.samples, 120);
   }
@@ -1391,9 +1397,11 @@ async function fpsList() {
   if (!fpsv) return;
   const j = await api("GET", `/api/fps/sessions?dev=${fpsv.dev}`);
   const ss = (j.sessions || []);
-  $("#fpslist").innerHTML = ss.length ? `<table class="ports" style="font-size:12.5px"><tr><th>When</th><th>Label</th><th>Length</th><th>Avg</th><th>1% low</th><th>Min</th><th>Worst frame</th><th></th></tr>` +
+  $("#fpslist").innerHTML = ss.length ? `<table class="ports" style="font-size:12.5px"><tr><th>When</th><th>Label</th><th>Length</th><th>Avg</th><th>1% low</th><th>Min</th><th>Worst frame</th><th>CPU</th><th>Memory</th><th></th></tr>` +
     ss.map(s => `<tr><td>${esc(new Date(s.started * 1000).toLocaleString())}</td><td>${esc(s.label)}${s.source ? `<div class="sub">counted from ${esc(s.source)}</div>` : ""}</td>
       <td>${s.seconds >= 120 ? Math.round(s.seconds / 60) + " min" : s.seconds + " s"}</td><td>${s.avg}</td><td>${s.running ? "–" : s.low1}</td><td>${s.min ?? "–"}</td><td>${s.worst_ms} ms</td>
+      <td>${s.cpu_avg != null ? s.cpu_avg + "%" : "–"}${s.proc_cpu_avg != null ? `<div class="sub">${esc(s.proc)} ${s.proc_cpu_avg}% of a core</div>` : ""}</td>
+      <td>${s.mem_used_max_mb != null ? s.mem_used_max_mb + " MB" : "–"}${s.proc_rss_max_mb != null ? `<div class="sub">${esc(s.proc)} ${s.proc_rss_max_mb} MB</div>` : ""}</td>
       <td>${s.running ? "recording" : `<button type="button" class="small" data-fpsview="${esc(s.id)}">View</button>`}</td></tr>`).join("") + "</table>"
     : "None yet. Start tracking above: DeviceHub records one reading per second until you stop it.";
 }
@@ -1404,7 +1412,9 @@ async function fpsView(id) {
   const s = j.summary;
   $("#fpslive").hidden = true; $("#fpsview").hidden = false; $("#fpsback").hidden = false;
   $("#fpsvsum").innerHTML = `<b>${esc(s.label)}</b> · ${esc(new Date(s.started * 1000).toLocaleString())} · ${s.seconds} s · by ${esc(s.who || "?")}<br>
-    avg <b>${s.avg}</b> fps · 1% low <b>${s.low1}</b> · min ${s.min} · worst frame ${s.worst_ms} ms · counted from ${esc(s.source || "–")}${s.end_note ? ` · ${esc(s.end_note)}` : ""}`;
+    avg <b>${s.avg}</b> fps · 1% low <b>${s.low1}</b> · min ${s.min} · worst frame ${s.worst_ms} ms · counted from ${esc(s.source || "–")}${s.end_note ? ` · ${esc(s.end_note)}` : ""}` + (s.cpu_avg != null ? `<br>
+    CPU avg <b>${s.cpu_avg}%</b> (max ${s.cpu_max}%) of ${s.cores} cores · memory max ${s.mem_used_max_mb} of ${s.mem_total_mb} MB (least free ${s.mem_avail_min_mb} MB)${s.swap_max_mb ? ` · swap max ${s.swap_max_mb} MB` : ""}${s.mhz_avg ? ` · ${s.mhz_avg} MHz avg` : ""}${s.temp_max != null ? ` · ${s.temp_max} °C max` : ""}` +
+    (s.proc_cpu_avg != null ? `<br>${esc(s.proc)}: ${s.proc_cpu_avg}% of a core avg (max ${s.proc_cpu_max}%), ${s.proc_rss_max_mb} MB max` : "") : "");
   fpsChart($("#fpsvchart"), j.samples, 0);
 }
 $("#fpslist").addEventListener("click", e => { const b = e.target.closest("[data-fpsview]"); if (b) fpsView(b.dataset.fpsview); });
