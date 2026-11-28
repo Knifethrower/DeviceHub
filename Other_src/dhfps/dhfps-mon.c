@@ -9,6 +9,12 @@
  *           monitor runs from, see dhfps.h). A program in a flatpak has its own process numbers, so a record whose
  *           number isn't that program on the host is kept while its frames are recent.
  * "worst" is the longest frame in that second, in ms.
+ * Each line also has what the device was doing that second:
+ *   "sys":  CPU use of all cores together (%), core count, memory used / available / total and swap used (MB),
+ *           cpu0's clock (MHz) and the first thermal zone (°C), from /proc/stat, /proc/meminfo and /sys.
+ *   "top":  the three busiest processes (pid, name, CPU as % of one core, RSS in MB), from one pass over /proc.
+ *   "apps" entries get "cpu" and "rss" the same way when their pid is that program on the host.
+ * All of it is read once a second by this process (no programs started), so it adds little to the monitor itself.
  *
  *   dhfps-mon [poll_ms=3] [max_seconds=21600] [watch_stdin=0]
  * Stops when stdout goes away, after max_seconds, or (watch_stdin=1) when stdin reaches end of file: DeviceHub keeps
@@ -248,6 +254,171 @@ static void scan_apps(void)
     closedir(d);
 }
 
+/* ---- CPU and memory, once a second ---- */
+
+#define MAXPROC 4096
+struct pinfo {                  /* one process seen in /proc: its CPU time last pass, to get this second's share */
+    int pid;
+    uint64_t start;             /* start time (field 22): a reused pid is a different process */
+    uint64_t jiffies;           /* utime + stime */
+    uint32_t gen;               /* the pass it was last seen in */
+    double cpu;                 /* % of one core, last second */
+    double rss_mb;
+    char comm[16];
+};
+static struct pinfo procs[MAXPROC];
+static uint32_t pgen;
+static long hz = 100, page_kb = 4;
+static int ncores = 1;
+static uint64_t cpu_busy, cpu_total;    /* /proc/stat totals at the last pass */
+static double sys_cpu = -1;
+static struct top { int pid; double cpu, rss_mb; char comm[16]; } tops[3];
+static int ntop;
+
+static ssize_t read_file(const char *path, char *buf, size_t n)
+{
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+    ssize_t r = read(fd, buf, n - 1);
+    close(fd);
+    buf[r > 0 ? r : 0] = 0;
+    return r;
+}
+
+static struct pinfo *pslot(int pid)
+{
+    unsigned h = (unsigned)pid * 2654435761u % MAXPROC;
+    for (int k = 0; k < MAXPROC; k++, h = (h + 1) % MAXPROC)
+        if (procs[h].pid == pid || procs[h].pid == 0 || procs[h].gen + 2 < pgen)
+            return &procs[h];
+    return 0;
+}
+
+static struct pinfo *pfind(int pid)
+{
+    unsigned h = (unsigned)pid * 2654435761u % MAXPROC;
+    for (int k = 0; k < MAXPROC; k++, h = (h + 1) % MAXPROC) {
+        if (procs[h].pid == 0)
+            return 0;
+        if (procs[h].pid == pid && procs[h].gen == pgen)
+            return &procs[h];
+    }
+    return 0;
+}
+
+static void scan_cpu(double secs)
+{
+    char buf[512];
+    unsigned long long v[10] = { 0 };
+    if (read_file("/proc/stat", buf, sizeof buf) > 0 &&
+        sscanf(buf, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6],
+               &v[7]) >= 4) {
+        uint64_t idle = v[3] + v[4], total = 0;
+        for (int i = 0; i < 8; i++)
+            total += v[i];
+        uint64_t busy = total - idle;
+        sys_cpu = cpu_total && total > cpu_total ? 100.0 * (busy - cpu_busy) / (total - cpu_total) : -1;
+        cpu_busy = busy;
+        cpu_total = total;
+    }
+    /* every process: this second's CPU from the change in its utime + stime */
+    pgen++;
+    ntop = 0;
+    DIR *d = opendir("/proc");
+    if (!d)
+        return;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] < '1' || e->d_name[0] > '9')
+            continue;
+        int pid = atoi(e->d_name);
+        char path[32], st[512];
+        snprintf(path, sizeof path, "/proc/%d/stat", pid);
+        if (read_file(path, st, sizeof st) <= 0)
+            continue;
+        char *l = strchr(st, '('), *r = strrchr(st, ')');
+        if (!l || !r || r < l)
+            continue;
+        unsigned long long ut, stt, start;
+        long rss;
+        /* after ") ": state ppid pgrp session tty tpgid flags minflt cminflt majflt cmajflt utime stime cutime cstime
+           priority nice threads itrealvalue starttime vsize rss */
+        if (sscanf(r + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %llu %*u %ld",
+                   &ut, &stt, &start, &rss) != 4)
+            continue;
+        struct pinfo *p = pslot(pid);
+        if (!p)
+            continue;
+        int known = p->pid == pid && p->start == start && p->gen + 1 == pgen;
+        uint64_t j = ut + stt;
+        p->cpu = known && secs > 0 ? 100.0 * (double)(j - p->jiffies) / hz / secs : 0;
+        p->pid = pid;
+        p->start = start;
+        p->jiffies = j;
+        p->gen = pgen;
+        p->rss_mb = rss * page_kb / 1024.0;
+        size_t n = (size_t)(r - l - 1) < sizeof p->comm - 1 ? (size_t)(r - l - 1) : sizeof p->comm - 1;
+        memcpy(p->comm, l + 1, n);
+        p->comm[n] = 0;
+        if (!known || p->cpu <= 0)
+            continue;
+        int at;                                     /* keep the three busiest, busiest first */
+        if (ntop < 3)
+            at = ntop++;
+        else if (tops[2].cpu >= p->cpu)
+            continue;
+        else
+            at = 2;
+        tops[at] = (struct top){ pid, p->cpu, p->rss_mb, { 0 } };
+        memcpy(tops[at].comm, p->comm, sizeof p->comm);
+        for (; at > 0 && tops[at].cpu > tops[at - 1].cpu; at--) {
+            struct top t = tops[at]; tops[at] = tops[at - 1]; tops[at - 1] = t;
+        }
+    }
+    closedir(d);
+}
+
+static long meminfo_kb(const char *buf, const char *key)
+{
+    const char *p = strstr(buf, key);
+    return p ? atol(p + strlen(key)) : -1;
+}
+
+static void json_str(const char *s);
+
+static void report_sys(void)
+{
+    char buf[2048];
+    long total = -1, avail = -1, swt = -1, swf = -1, mhz = -1, temp = -999999;
+    if (read_file("/proc/meminfo", buf, sizeof buf) > 0) {
+        total = meminfo_kb(buf, "MemTotal:");
+        avail = meminfo_kb(buf, "MemAvailable:");
+        if (avail < 0)                              /* kernels before 3.14: free + buffers + cached */
+            avail = meminfo_kb(buf, "MemFree:") + meminfo_kb(buf, "Buffers:") + meminfo_kb(buf, "Cached:");
+        swt = meminfo_kb(buf, "SwapTotal:");
+        swf = meminfo_kb(buf, "SwapFree:");
+    }
+    if (read_file("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", buf, sizeof buf) > 0)
+        mhz = atol(buf) / 1000;
+    if (read_file("/sys/class/thermal/thermal_zone0/temp", buf, sizeof buf) > 0)
+        temp = atol(buf);
+    printf(",\"sys\":{\"cores\":%d", ncores);
+    if (sys_cpu >= 0) printf(",\"cpu\":%.1f", sys_cpu);
+    if (total > 0) printf(",\"total_mb\":%.0f,\"used_mb\":%.0f,\"avail_mb\":%.0f", total / 1024.0,
+                          (total - avail) / 1024.0, avail / 1024.0);
+    if (swt > 0 && swf >= 0) printf(",\"swap_mb\":%.0f", (swt - swf) / 1024.0);
+    if (mhz > 0) printf(",\"mhz\":%ld", mhz);
+    if (temp > -999999) printf(",\"temp\":%.1f", temp > 1000 ? temp / 1000.0 : (double)temp);   /* m°C or °C */
+    printf("},\"top\":[");
+    for (int i = 0; i < ntop; i++) {
+        printf("%s{\"pid\":%d,\"comm\":", i ? "," : "", tops[i].pid);
+        json_str(tops[i].comm);
+        printf(",\"cpu\":%.1f,\"rss\":%.1f}", tops[i].cpu, tops[i].rss_mb);
+    }
+    printf("]");
+}
+
 static void json_str(const char *s)
 {
     putchar('"');
@@ -297,12 +468,18 @@ static void report(double secs)
         memcpy(comm, a->rec->comm, 32);
         comm[32] = 0;
         json_str(comm);
-        printf(",\"fps\":%.1f,\"worst\":%.1f}", (f - a->frames) / secs, worst / 1000.0);
+        printf(",\"fps\":%.1f,\"worst\":%.1f", (f - a->frames) / secs, worst / 1000.0);
+        struct pinfo *pi = pfind(a->pid);       /* a flatpak's own pid numbers name another host process: skip */
+        if (pi && !strncmp(pi->comm, comm, 15))
+            printf(",\"cpu\":%.1f,\"rss\":%.1f", pi->cpu, pi->rss_mb);
+        printf("}");
         a->frames = f;
         a->pos = pos;
         first = 0;
     }
-    printf("]}\n");
+    printf("]");
+    report_sys();
+    printf("}\n");
     if (fflush(stdout) != 0 || ferror(stdout))
         exit(0);
 }
@@ -314,6 +491,10 @@ int main(int argc, char **argv)
     int watch_stdin = argc > 3 && atoi(argv[3]);
     if (poll_ms < 1) poll_ms = 1;
     dhfps_apps_dir(argv[0], apps_dir, sizeof apps_dir);
+    hz = sysconf(_SC_CLK_TCK) > 0 ? sysconf(_SC_CLK_TCK) : 100;
+    page_kb = sysconf(_SC_PAGESIZE) > 0 ? sysconf(_SC_PAGESIZE) / 1024 : 4;
+    ncores = sysconf(_SC_NPROCESSORS_CONF) > 0 ? (int)sysconf(_SC_NPROCESSORS_CONF) : 1;
+    scan_cpu(0);                                /* the first pass only sets the starting points */
     signal(SIGPIPE, SIG_DFL);
     open_devices();
     scan_apps();
@@ -335,6 +516,7 @@ int main(int argc, char **argv)
         uint64_t t = mono_ns();
         poll_srcs(t);
         if (t - tick >= 1000000000u) {
+            scan_cpu((t - tick) / 1e9);
             report((t - tick) / 1e9);
             tick = t;
             if (++ticks % 2 == 0) {

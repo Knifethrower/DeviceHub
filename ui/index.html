@@ -1320,28 +1320,98 @@ if (/^#dev=/.test(location.hash)) {
 let con = null;   // {dev, src: "@sessions" | path, seq, offset, timer, text}
 // ---- FPS: live reading (the device's monitor runs while this is open), tracked sessions
 let fpsv = null;
-function fpsChart(canvas, samples, span) {   // samples: [{t, fps, worst}], span: seconds shown (0 = all)
+// Lines the FPS graphs can draw. FPS uses the left axis; the rest share the right one (0–100, wider when a program
+// uses more than one core). "proc": the program a graph follows (its CPU as % of one core).
+const FPS_SERIES = [
+  { k: "fps", label: "FPS", color: "--accent", v: s => s.fps },
+  { k: "cpu", label: "CPU % (all cores)", color: "--warn", v: s => s.sys?.cpu },
+  { k: "proc", label: "program CPU % of a core", color: "--warn", dash: [4, 3], v: (s, p) => fpsProc(s, p) },
+  { k: "mem", label: "memory used %", color: "--ok", v: s => s.sys?.used_mb != null && s.sys.total_mb ? 100 * s.sys.used_mb / s.sys.total_mb : null },
+  { k: "temp", label: "°C", color: "--bad", v: s => s.sys?.temp },
+];
+const fpsOn = JSON.parse(store("fps.series") || '{"fps":1,"cpu":1,"proc":0,"mem":1,"temp":0}');
+function fpsProc(s, name) {   // CPU of the program called NAME in one reading (frame-counted entry, else the top list)
+  if (!name) return null;
+  for (const e of [...(s.apps || []), ...(s.top || [])]) if (e.comm === name && e.cpu != null) return e.cpu;
+  return null;
+}
+function fpsFollow(samples) {   // live: the program counted inside most seconds, else the busiest one most seconds
+  const n = {}, m = {};
+  for (const s of samples) {
+    if (s.kind === "app" && s.src) n[s.src] = (n[s.src] || 0) + 1;
+    const t = s.top && s.top[0]; if (t) m[t.comm] = (m[t.comm] || 0) + 1;
+  }
+  const c = Object.keys(n).length ? n : m, ks = Object.keys(c);
+  return ks.length ? ks.reduce((a, b) => c[b] > c[a] ? b : a) : null;
+}
+function fpsToggles(canvas, samples, proc) {   // a checkbox per line that has data, under the graph
+  let box = canvas.nextElementSibling;
+  if (!box || !box.classList.contains("fpsser")) {
+    box = document.createElement("div"); box.className = "fpsser";
+    box.style.cssText = "display:flex;flex-wrap:wrap;gap:4px 14px;margin:-2px 0 6px";
+    canvas.after(box);
+    box.addEventListener("change", e => {
+      fpsOn[e.target.dataset.k] = e.target.checked ? 1 : 0; store("fps.series", JSON.stringify(fpsOn));
+      for (const c of [$("#fpschart"), $("#fpsvchart")]) if (c._last) fpsChart(c, ...c._last);
+    });
+  }
+  const css = getComputedStyle(document.documentElement);
+  const has = FPS_SERIES.filter(se => samples.some(s => se.v(s, proc) != null));
+  const key = has.map(se => se.k).join() + "|" + proc;
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  box.innerHTML = has.length < 2 ? "" : has.map(se => `<label class="chk"><input type="checkbox" data-k="${se.k}"${fpsOn[se.k] ? " checked" : ""}>` +
+    `<span style="display:inline-block;width:14px;height:0;border-top:2px ${se.dash ? "dashed" : "solid"} ${css.getPropertyValue(se.color)}"></span>` +
+    `${esc(se.k === "proc" ? `${proc} CPU % of a core` : se.label)}</label>`).join("");
+}
+function fpsChart(canvas, samples, span, proc) {   // samples: readings, span: seconds shown (0 = all), proc: program followed
+  canvas._last = [samples, span, proc];
+  if (proc === undefined) proc = fpsFollow(samples);
+  fpsToggles(canvas, samples, proc);
   const css = getComputedStyle(document.documentElement), dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = canvas.clientHeight;
   canvas.width = w * dpr; canvas.height = h * dpr;
   const g = canvas.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
   if (!samples.length) return;
   const t1 = samples[samples.length - 1].t, t0 = span ? t1 - span * 1000 : samples[0].t;
-  const top = Math.max(65, ...samples.map(s => s.fps)) * 1.08, L = 30, B = h - 16;
-  const x = t => L + (w - L - 6) * (span || t1 > t0 ? (t - t0) / Math.max(1, t1 - t0) : 1), y = v => B - (B - 6) * v / top;
+  const shown = samples.filter(s => s.t >= t0);
+  const avail = FPS_SERIES.filter(se => shown.some(s => se.v(s, proc) != null));
+  const lines = avail.length < 2 ? avail : avail.filter(se => fpsOn[se.k]);   // one line (older sessions): always
+  const right = lines.filter(se => se.k !== "fps");
+  const top = Math.max(65, ...shown.map(s => s.fps)) * 1.08, L = 30, R = right.length ? 34 : 6, B = h - 16;
+  const rtop = Math.max(100, ...right.flatMap(se => shown.map(s => se.v(s, proc) ?? 0))) * 1.08;
+  const x = t => L + (w - L - R) * (span || t1 > t0 ? (t - t0) / Math.max(1, t1 - t0) : 1);
+  const y = v => B - (B - 6) * v / top, yr = v => B - (B - 6) * v / rtop;
   g.font = "11px " + css.getPropertyValue("--mono"); g.fillStyle = css.getPropertyValue("--faint"); g.strokeStyle = css.getPropertyValue("--line");
-  for (const v of [30, 60, 90, 120].filter(v => v < top)) {
-    g.beginPath(); g.moveTo(L, y(v)); g.lineTo(w - 6, y(v)); g.stroke(); g.fillText(String(v), 4, y(v) + 4);
+  g.lineWidth = 1;
+  const withFps = lines.some(se => se.k === "fps");
+  if (withFps)
+    for (const v of [30, 60, 90, 120].filter(v => v < top)) {
+      g.beginPath(); g.moveTo(L, y(v)); g.lineTo(w - R, y(v)); g.stroke(); g.fillText(String(v), 4, y(v) + 4);
+    }
+  if (right.length) {
+    g.textAlign = "right";
+    for (const v of [25, 50, 75, 100, 200, 300, 400].filter(v => v < rtop && (v <= 100 || rtop > 150))) {
+      if (!withFps) { g.beginPath(); g.moveTo(L, yr(v)); g.lineTo(w - R, yr(v)); g.stroke(); }
+      g.fillText(String(v), w - 2, yr(v) + 4);
+    }
+    g.textAlign = "left";
   }
   const span_s = Math.round((t1 - t0) / 1000);
   g.fillText(span_s >= 120 ? Math.round(span_s / 60) + " min" : span_s + " s", L, h - 3);
-  g.strokeStyle = css.getPropertyValue("--accent"); g.lineWidth = 1.6; g.beginPath();
-  let started = false;
-  for (const s of samples) {
-    if (s.t < t0) continue;
-    if (!started) { g.moveTo(x(s.t), y(s.fps)); started = true; } else g.lineTo(x(s.t), y(s.fps));
+  for (const se of lines.reverse()) {     // FPS last, on top
+    const yy = se.k === "fps" ? y : yr;
+    g.strokeStyle = css.getPropertyValue(se.color); g.lineWidth = se.k === "fps" ? 1.6 : 1.2;
+    g.setLineDash(se.dash || []); g.beginPath();
+    let pen = false;
+    for (const s of shown) {
+      const v = se.v(s, proc);
+      if (v == null) { pen = false; continue; }      // gaps where a second has no value
+      if (!pen) { g.moveTo(x(s.t), yy(v)); pen = true; } else g.lineTo(x(s.t), yy(v));
+    }
+    g.stroke();
   }
-  g.stroke();
+  g.setLineDash([]);
 }
 function openFps(d) {
   fpsv = { dev: d.id, name: d.name, timer: null, view: null };
@@ -1377,6 +1447,12 @@ async function pollFps() {
     const rows = [];
     for (const a of last.apps || []) rows.push(`${String(a.fps.toFixed(1)).padStart(6)} fps  ${a.comm} (pid ${a.pid}, preload)  worst ${a.worst.toFixed(1)} ms`);
     for (const f of last.flip || []) rows.push(`${String(f.fps.toFixed(1)).padStart(6)} fps  ${f.src} (page flips)  worst ${f.worst.toFixed(1)} ms`);
+    const y = last.sys;
+    if (y) {
+      rows.push("", `CPU ${y.cpu != null ? y.cpu.toFixed(0) + "%" : "–"} of ${y.cores} cores · memory ${y.used_mb ?? "–"} of ${y.total_mb ?? "–"} MB used (${y.avail_mb ?? "–"} free)` +
+        `${y.swap_mb ? ` · swap ${y.swap_mb} MB` : ""}${y.mhz ? ` · ${y.mhz} MHz` : ""}${y.temp != null ? ` · ${y.temp.toFixed(0)} °C` : ""}`);
+      for (const t of last.top || []) rows.push(`${String(t.cpu.toFixed(0) + "%").padStart(6)} of a core  ${t.comm} (pid ${t.pid})  ${t.rss.toFixed(0)} MB`);
+    }
     $("#fpsrows").textContent = rows.join("\n");
     if ($("#fpsview").hidden) fpsChart($("#fpschart"), j.samples, 120);
   }
@@ -1391,9 +1467,11 @@ async function fpsList() {
   if (!fpsv) return;
   const j = await api("GET", `/api/fps/sessions?dev=${fpsv.dev}`);
   const ss = (j.sessions || []);
-  $("#fpslist").innerHTML = ss.length ? `<table class="ports" style="font-size:12.5px"><tr><th>When</th><th>Label</th><th>Length</th><th>Avg</th><th>1% low</th><th>Min</th><th>Worst frame</th><th></th></tr>` +
+  $("#fpslist").innerHTML = ss.length ? `<table class="ports" style="font-size:12.5px"><tr><th>When</th><th>Label</th><th>Length</th><th>Avg</th><th>1% low</th><th>Min</th><th>Worst frame</th><th>CPU</th><th>Memory</th><th></th></tr>` +
     ss.map(s => `<tr><td>${esc(new Date(s.started * 1000).toLocaleString())}</td><td>${esc(s.label)}${s.source ? `<div class="sub">counted from ${esc(s.source)}</div>` : ""}</td>
       <td>${s.seconds >= 120 ? Math.round(s.seconds / 60) + " min" : s.seconds + " s"}</td><td>${s.avg}</td><td>${s.running ? "–" : s.low1}</td><td>${s.min ?? "–"}</td><td>${s.worst_ms} ms</td>
+      <td>${s.cpu_avg != null ? s.cpu_avg + "%" : "–"}${s.proc_cpu_avg != null ? `<div class="sub">${esc(s.proc)} ${s.proc_cpu_avg}% of a core</div>` : ""}</td>
+      <td>${s.mem_used_max_mb != null ? s.mem_used_max_mb + " MB" : "–"}${s.proc_rss_max_mb != null ? `<div class="sub">${esc(s.proc)} ${s.proc_rss_max_mb} MB</div>` : ""}</td>
       <td>${s.running ? "recording" : `<button type="button" class="small" data-fpsview="${esc(s.id)}">View</button>`}</td></tr>`).join("") + "</table>"
     : "None yet. Start tracking above: DeviceHub records one reading per second until you stop it.";
 }
@@ -1404,8 +1482,10 @@ async function fpsView(id) {
   const s = j.summary;
   $("#fpslive").hidden = true; $("#fpsview").hidden = false; $("#fpsback").hidden = false;
   $("#fpsvsum").innerHTML = `<b>${esc(s.label)}</b> · ${esc(new Date(s.started * 1000).toLocaleString())} · ${s.seconds} s · by ${esc(s.who || "?")}<br>
-    avg <b>${s.avg}</b> fps · 1% low <b>${s.low1}</b> · min ${s.min} · worst frame ${s.worst_ms} ms · counted from ${esc(s.source || "–")}${s.end_note ? ` · ${esc(s.end_note)}` : ""}`;
-  fpsChart($("#fpsvchart"), j.samples, 0);
+    avg <b>${s.avg}</b> fps · 1% low <b>${s.low1}</b> · min ${s.min} · worst frame ${s.worst_ms} ms · counted from ${esc(s.source || "–")}${s.end_note ? ` · ${esc(s.end_note)}` : ""}` + (s.cpu_avg != null ? `<br>
+    CPU avg <b>${s.cpu_avg}%</b> (max ${s.cpu_max}%) of ${s.cores} cores · memory max ${s.mem_used_max_mb} of ${s.mem_total_mb} MB (least free ${s.mem_avail_min_mb} MB)${s.swap_max_mb ? ` · swap max ${s.swap_max_mb} MB` : ""}${s.mhz_avg ? ` · ${s.mhz_avg} MHz avg` : ""}${s.temp_max != null ? ` · ${s.temp_max} °C max` : ""}` +
+    (s.proc_cpu_avg != null ? `<br>${esc(s.proc)}: ${s.proc_cpu_avg}% of a core avg (max ${s.proc_cpu_max}%), ${s.proc_rss_max_mb} MB max` : "") : "");
+  fpsChart($("#fpsvchart"), j.samples, 0, s.proc || null);
 }
 $("#fpslist").addEventListener("click", e => { const b = e.target.closest("[data-fpsview]"); if (b) fpsView(b.dataset.fpsview); });
 $("#fpsback").onclick = () => { fpsv.view = null; $("#fpslive").hidden = false; $("#fpsview").hidden = true; $("#fpsback").hidden = true; };

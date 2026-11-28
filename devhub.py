@@ -535,20 +535,39 @@ class ConsoleFeed:
         self.flush()
 
 
+def res_text(x):
+    """CPU and memory of one reading: '  cpu 41% mem 612/980 MB  top soh.elf 96% 310 MB' ('' from older monitors)."""
+    y = x.get("sys") or {}
+    if not y:
+        return ""
+    t = (x.get("top") or [None])[0]
+    return "  cpu %s%% mem %s/%s MB%s" % (
+        "%.0f" % y["cpu"] if y.get("cpu") is not None else "?", y.get("used_mb", "?"), y.get("total_mb", "?"),
+        "  top %s %.0f%% %.0f MB" % (t["comm"], t["cpu"], t.get("rss") or 0) if t else "")
+
+
 def fps_line(x):
     other = ", ".join("%s %s" % (f["src"], f["fps"]) for f in x.get("flip") or [] if f.get("src") != x.get("src"))
     if not x.get("fps"):
-        return "  - nothing drawn (screen idle)"
-    return "%5.1f fps  %-18s worst frame %5.1f ms%s" % (x["fps"], (x.get("src") or "")[:18], x.get("worst") or 0,
-                                                         "   [screen: %s]" % other if other and x.get("kind") == "app" else "")
+        return "  - nothing drawn (screen idle)" + res_text(x)
+    return "%5.1f fps  %-18s worst frame %5.1f ms%s%s" % (x["fps"], (x.get("src") or "")[:18], x.get("worst") or 0,
+                                                           "   [screen: %s]" % other if other and x.get("kind") == "app" else "",
+                                                           res_text(x))
 
 
 def fps_summary_line(s):
     import time
-    return "%s  %-28s %5ss  avg %5.1f  1%% low %5.1f  min %5.1f  worst %6.1f ms  %s" % (
+    res = ""
+    if s.get("cpu_avg") is not None:
+        res = "  cpu avg %s%% max %s%%  mem max %s/%s MB" % (s["cpu_avg"], s.get("cpu_max"), s.get("mem_used_max_mb"),
+                                                         s.get("mem_total_mb"))
+        if s.get("proc_cpu_avg") is not None:
+            res += "  %s %s%% of a core (max %s%%), %s MB" % (s.get("proc"), s["proc_cpu_avg"], s.get("proc_cpu_max"),
+                                                            s.get("proc_rss_max_mb"))
+    return "%s  %-28s %5ss  avg %5.1f  1%% low %5.1f  min %5.1f  worst %6.1f ms  %s%s" % (
         time.strftime("%m-%d %H:%M", time.localtime(s.get("started") or 0)), (s.get("label") or "")[:28],
         s.get("seconds", 0), s.get("avg") or 0, s.get("low1") or 0, s.get("min") or 0, s.get("worst_ms") or 0,
-        "(recording)" if s.get("running") else s.get("id", ""))
+        "(recording)" if s.get("running") else s.get("id", ""), res)
 
 
 def c_fps(a):

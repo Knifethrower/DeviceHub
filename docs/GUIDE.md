@@ -122,8 +122,12 @@ agents see [AGENTS.md](AGENTS.md).
 
   The monitor runs only while the dialog is open (or a session records) and stops ~20 s after. **Tracked
   sessions** (*Start tracking*, or `devhub fps DEV start "label"`) record one reading per second until stopped:
-  average, 1% low (the slowest 1% of seconds), minimum and the longest single frame, with a graph and a CSV
-  download. A session interrupted by a DeviceHub restart is closed with what it recorded. Sessions are kept in
+  average, 1% low (the slowest 1% of seconds), minimum and the longest single frame, with a graph (FPS, CPU, the program's CPU, memory and
+  temperature, each with a checkbox to show or hide it) and a CSV
+  download. Each reading also has CPU (all cores, and the three busiest processes as % of one core), memory used
+  and free, swap, the CPU clock and temperature, read by the same monitor once a second (no programs started on the
+  device, so it costs about 1% of one core more); a session shows their average and peaks, and those of the program
+  it follows (the port counted inside, else the busiest process). A session interrupted by a DeviceHub restart is closed with what it recorded. Sessions are kept in
   `data/fps/`. Rebuild the device tools with `Other_src/dhfps/build.sh`.
 
 - **Console** (card button): agents' `devhub run` commands on that device with their output, the running app's

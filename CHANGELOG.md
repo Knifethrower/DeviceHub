@@ -6,6 +6,21 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.18.0 (2026-11-28)
+- FPS graphs (live and a session's) also draw CPU (all cores), the followed program's CPU (% of one core), memory
+  used (% of total) and temperature on a second axis, with a checkbox per line to show or hide it (remembered in the
+  browser). Sessions from before 1.17 have only FPS and show no checkboxes. A session's samples now include `apps`.
+
+## 1.17.0 (2026-11-27)
+- FPS readings and sessions include CPU and memory: the device's monitor (`dhfps-mon`) reads `/proc/stat`,
+  `/proc/meminfo`, every process's CPU time and the CPU clock and temperature once a second, without starting
+  programs (about 1% of one core more on a G350-class CPU). Each reading has `sys` (CPU of all cores, memory used
+  and free, swap, MHz, °C) and `top` (the three busiest processes, CPU as % of one core and RSS); frame-counted
+  programs get their own CPU and RSS. A session's summary, the FPS dialog, `devhub fps` and the CSV show them,
+  including the averages and peaks of the program it follows. Older sessions are unchanged.
+- `dhfps-mon-aarch64` rebuilt (with the folder and flatpak changes of 1.16.0); `Other_src/dhfps/build.sh`
+  `ONLY=mon` builds just the two monitors.
+
 ## 1.16.0 (2026-11-19)
 - x86_64 devices (Steam Deck, PCs, VMs): live screen, remote input and the FPS counter have x86_64 builds
   (`stream/dhcap-x86_64`, `helper/dhinput-x86_64`, `fps/dhfps-mon-x86_64`, `fps/libdhfps-x86_64.so`), picked by

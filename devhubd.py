@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.16.0"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.18.0"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -6213,11 +6213,47 @@ def fps_session_add(s, j):
     s["worst"] = max(s["worst"], j["worst"] or 0)
     s["srcs"][j["src"] or "-"] = s["srcs"].get(j["src"] or "-", 0) + 1
     with open(fps_session_path(s["id"], "jsonl"), "a", encoding="utf-8") as f:
-        f.write(json.dumps({k: j[k] for k in ("t", "fps", "worst", "src", "kind", "flip", "apps")}) + "\n")
+        f.write(json.dumps({k: j[k] for k in ("t", "fps", "worst", "src", "kind", "flip", "apps", "sys", "top")
+                            if k in j}) + "\n")     # sys/top: monitors from 1.17 on
+
+
+def fps_proc_of(x, name):
+    """(cpu % of one core, RSS MB) of the program called NAME in one reading: its frame-counted entry, else the top
+    list. None when it isn't in that second's reading."""
+    for e in (x.get("apps") or []) + (x.get("top") or []):
+        if e.get("comm") == name and e.get("cpu") is not None:
+            return e["cpu"], e.get("rss")
+    return None
+
+
+def fps_res_summary(samples):
+    """CPU and memory over a session, from the monitor's "sys" and "top" (monitors before 1.17 have neither: {}).
+    The program it follows: the one counted inside (kind app) most seconds, else the busiest process most seconds."""
+    sy = [x["sys"] for x in samples if x.get("sys")]
+    if not sy:
+        return {}
+    avg = lambda v: round(sum(v) / len(v), 1) if v else None
+    mx = lambda v: round(max(v), 1) if v else None
+    cpu = [y["cpu"] for y in sy if y.get("cpu") is not None]
+    apps = collections.Counter(x.get("src") for x in samples if x.get("kind") == "app" and x.get("src"))
+    tops = collections.Counter((x.get("top") or [{}])[0].get("comm") for x in samples if x.get("top"))
+    name = (apps or tops).most_common(1)[0][0] if (apps or tops) else None
+    pv = [v for v in (fps_proc_of(x, name) for x in samples) if v] if name else []
+    return {"cores": sy[-1].get("cores"), "cpu_avg": avg(cpu), "cpu_max": mx(cpu),
+            "mem_total_mb": sy[-1].get("total_mb"),
+            "mem_used_max_mb": mx([y["used_mb"] for y in sy if y.get("used_mb") is not None]),
+            "mem_avail_min_mb": min((y["avail_mb"] for y in sy if y.get("avail_mb") is not None), default=None),
+            "swap_max_mb": mx([y["swap_mb"] for y in sy if y.get("swap_mb") is not None]),
+            "mhz_avg": avg([y["mhz"] for y in sy if y.get("mhz")]),
+            "temp_max": mx([y["temp"] for y in sy if y.get("temp") is not None]),
+            "proc": name, "proc_seconds": len(pv), "proc_cpu_avg": avg([v[0] for v in pv]),
+            "proc_cpu_max": mx([v[0] for v in pv]),
+            "proc_rss_max_mb": mx([v[1] for v in pv if v[1] is not None])}
 
 
 def fps_summary(head, samples):
-    """avg, 1% low (1st percentile of the per-second fps), min, longest frame, over a session's samples."""
+    """avg, 1% low (1st percentile of the per-second fps), min, longest frame, over a session's samples; CPU and
+    memory with them (fps_res_summary)."""
     fs = sorted(x["fps"] for x in samples)
     srcs = collections.Counter(x.get("src") or "-" for x in samples)
     out = dict(head, seconds=len(fs), avg=round(sum(fs) / len(fs), 1) if fs else 0,
@@ -6227,6 +6263,7 @@ def fps_summary(head, samples):
     if len(fs) >= 100:      # with 100+ seconds the 1% low is the mean of the slowest 1%
         k = max(1, len(fs) // 100)
         out["low1"] = round(sum(fs[:k]) / k, 1)
+    out.update(fps_res_summary(samples))
     return out
 
 
@@ -6488,14 +6525,22 @@ def r_fps_session_get(body, q, sid):
     head, samples = fps_session_read(sid)
     summary = load_json(os.path.join("fps", sid + ".json"), None) or fps_summary(head, samples)
     if (q.get("csv") or [""])[0]:
-        rows = ["time,fps,worst_frame_ms,source,kind"] + [
-            "%s,%s,%s,%s,%s" % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(x["t"] / 1000)), x["fps"],
-                                x.get("worst") or 0, (x.get("src") or "").replace(",", " "), x.get("kind") or "")
-            for x in samples]
+        name = summary.get("proc")
+        cell = lambda v: "" if v is None else str(v).replace(",", " ")
+        rows = ["time,fps,worst_frame_ms,source,kind,cpu_pct,mem_used_mb,mem_avail_mb,swap_mb,cpu0_mhz,temp_c,"
+                "program,program_cpu_pct_of_core,program_rss_mb,top1,top2,top3"]
+        for x in samples:
+            y, pv = x.get("sys") or {}, (fps_proc_of(x, name) if name else None) or (None, None)
+            tops = ["%s %s%%" % (e.get("comm"), e.get("cpu")) for e in (x.get("top") or [])[:3]]
+            rows.append(",".join(cell(v) for v in [
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(x["t"] / 1000)), x["fps"], x.get("worst") or 0,
+                x.get("src") or "", x.get("kind") or "", y.get("cpu"), y.get("used_mb"), y.get("avail_mb"),
+                y.get("swap_mb"), y.get("mhz"), y.get("temp"), name if pv[0] is not None else "", pv[0], pv[1]]
+                + (tops + ["", "", ""])[:3]))
         return ("text/csv", ("\n".join(rows) + "\n").encode(),
                 {"Content-Disposition": 'attachment; filename="%s.csv"' % sid})
     return {"ok": True, "summary": summary,
-            "samples": [{k: x.get(k) for k in ("t", "fps", "worst", "src", "kind")} for x in samples]}
+            "samples": [{k: x.get(k) for k in ("t", "fps", "worst", "src", "kind", "apps", "sys", "top")} for x in samples]}
 
 
 @route("DELETE", r"/api/fps/sessions/([0-9a-z_-]+)")
