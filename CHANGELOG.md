@@ -6,6 +6,11 @@ tag `vX.Y.Z` on its commit. When you change DeviceHub: raise `VERSION`, add an e
 
 Releases before 1.8.0 were tagged afterwards, on the commit each one ended with; their code still says 1.0.
 
+## 1.18.0 (2026-11-28)
+- FPS graphs (live and a session's) also draw CPU (all cores), the followed program's CPU (% of one core), memory
+  used (% of total) and temperature on a second axis, with a checkbox per line to show or hide it (remembered in the
+  browser). Sessions from before 1.17 have only FPS and show no checkboxes. A session's samples now include `apps`.
+
 ## 1.17.0 (2026-11-27)
 - FPS readings and sessions include CPU and memory: the device's monitor (`dhfps-mon`) reads `/proc/stat`,
   `/proc/meminfo`, every process's CPU time and the CPU clock and temperature once a second, without starting

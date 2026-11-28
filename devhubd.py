@@ -32,7 +32,7 @@ HOST = BIND
 RUN = os.environ.get("DEVHUB_RUN") or ("/tmp/devhub-%d-%d" % (os.getuid(), PORT))
 ASKPASS = os.path.join(RUN, "askpass.sh")
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-VERSION = "1.17.0"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
+VERSION = "1.18.0"  # semantic versioning; see CHANGELOG.md (raise it, add an entry, tag the commit)
 
 
 def detect_platform():
@@ -6540,7 +6540,7 @@ def r_fps_session_get(body, q, sid):
         return ("text/csv", ("\n".join(rows) + "\n").encode(),
                 {"Content-Disposition": 'attachment; filename="%s.csv"' % sid})
     return {"ok": True, "summary": summary,
-            "samples": [{k: x.get(k) for k in ("t", "fps", "worst", "src", "kind", "sys", "top")} for x in samples]}
+            "samples": [{k: x.get(k) for k in ("t", "fps", "worst", "src", "kind", "apps", "sys", "top")} for x in samples]}
 
 
 @route("DELETE", r"/api/fps/sessions/([0-9a-z_-]+)")
